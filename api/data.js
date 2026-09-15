@@ -8,14 +8,23 @@
    database driver never gets installed — which surfaces as
    FUNCTION_INVOCATION_FAILED with "Cannot find package".
 
-   The driver loads via dynamic import inside try/catch so a
-   missing dependency returns readable JSON instead of taking the
-   function down before it can respond.
+   Collections:
+     assets, pms, parts, wos — the working records
+     pmlogs                  — PM completion history (append-only)
+
+   pmlogs is a separate collection on purpose. Storing history as
+   an array inside each PM would lose entries: the jsonb merge
+   REPLACES a key rather than appending, so two people completing
+   PMs at the same time would clobber each other. An audit trail
+   cannot work that way. One row per completion, never updated.
    ============================================================ */
 
 import crypto from 'node:crypto';
 
-const COLLECTIONS = ['assets', 'pms', 'parts', 'wos'];
+const COLLECTIONS = ['assets', 'pms', 'parts', 'wos', 'pmlogs'];
+/* Records that are evidence, not working data. They may be created
+   but never edited, and only an admin may remove one. */
+const APPEND_ONLY = ['pmlogs'];
 const ROLES = ['maintenance', 'admin'];
 const SESSION_DAYS = 30;
 const PBKDF2_ROUNDS = 210000;
@@ -130,7 +139,7 @@ async function readAll(sql) {
   const rows = await sql`
     SELECT collection, id, data, updated_by, updated_at
     FROM records WHERE deleted = false ORDER BY collection, id`;
-  const out = { assets: [], pms: [], parts: [], wos: [] };
+  const out = { assets: [], pms: [], parts: [], wos: [], pmlogs: [] };
   rows.forEach(r => {
     /* updated_by comes from the session, so it cannot be spoofed. */
     if (out[r.collection]) out[r.collection].push(Object.assign({}, r.data, {
@@ -155,7 +164,6 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'application/json');
 
-  /* Unauthenticated health check — reports what is configured, never values. */
   if (req.method === 'GET' && req.query && req.query.diag) {
     const out = { ok: true, node: process.version,
       hasDatabaseUrl: !!process.env.DATABASE_URL,
@@ -212,9 +220,6 @@ export default async function handler(req, res) {
     if (req.method === 'GET') {
       if (req.query.rev) return res.status(200).json({ rev: await revision(sql) });
       if (req.query.me) return res.status(200).json({ user: me });
-      /* People list for assignment dropdowns. Any signed-in user may read it
-         — a technician has to be able to assign work to a colleague. Names
-         and roles only: no salts, hashes, or login history. */
       if (req.query.people) {
         const rows = await sql`
           SELECT username, full_name, role FROM users WHERE active = true ORDER BY full_name`;
@@ -257,6 +262,18 @@ export default async function handler(req, res) {
         const { collection, record } = body;
         if (!COLLECTIONS.includes(collection)) return res.status(400).json({ error: 'Unknown collection' });
         if (!record || !record.id) return res.status(400).json({ error: 'Record needs an id' });
+
+        /* An audit record is written once and never rewritten. Silently
+           allowing an edit would make the whole history worthless as
+           evidence. */
+        if (APPEND_ONLY.includes(collection)) {
+          const existing = await sql`
+            SELECT 1 FROM records WHERE collection = ${collection} AND id = ${String(record.id)}`;
+          if (existing.length) {
+            return res.status(409).json({ error: 'Completion records cannot be changed once written' });
+          }
+        }
+
         await sql`
           INSERT INTO records (collection, id, data, updated_at, updated_by, deleted)
           VALUES (${collection}, ${String(record.id)}, ${JSON.stringify(cleanRecord(record))}, now(), ${who}, false)
@@ -350,7 +367,6 @@ export default async function handler(req, res) {
         if (body.name !== undefined)
           await sql`UPDATE users SET full_name = ${String(body.name).trim()} WHERE username = ${username}`;
         if (body.role !== undefined && ROLES.includes(body.role)) {
-          /* Never let the last admin be demoted — it would lock everyone out. */
           if (rows[0].role === 'admin' && body.role !== 'admin') {
             const admins = await sql`SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin' AND active = true`;
             if (admins[0].n <= 1) return res.status(400).json({ error: 'This is the only admin — promote someone else first' });
