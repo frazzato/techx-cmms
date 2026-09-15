@@ -7,31 +7,22 @@ function esc(s){
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 /* Safe inside a single-quoted JS string within a double-quoted HTML
-   attribute: onclick="fn('<here>')". JS-escape then HTML-escape — without
-   the HTML pass a quote in an ID breaks out of the attribute. */
+   attribute: onclick="fn('<here>')". JS-escape then HTML-escape. */
 function jsq(s){
   return esc(String(s??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"));
 }
-
-/* Only allow links that actually navigate somewhere.
-   A pasted "javascript:..." URL in a document field would otherwise run
-   as soon as someone clicked it, so anything that is not http(s) or a
-   SharePoint/file style link is rejected outright. */
+/* Only allow links that actually navigate. A pasted "javascript:" URL
+   would otherwise run as soon as someone clicked it. */
 function safeUrl(u){
   const s=String(u||'').trim();
-  if(!s) return '';
-  if(/^[a-z][a-z0-9+.-]*:/i.test(s)){
-    return /^(https?|ftp|mailto|file):/i.test(s) ? s : '';
-  }
-  /* no scheme — treat as https so "sharepoint.com/..." still works */
+  if(!s)return '';
+  if(/^[a-z][a-z0-9+.-]*:/i.test(s))
+    return /^(https?|ftp|mailto|file):/i.test(s)?s:'';
   return 'https://'+s;
 }
-
-/* A document link rendered as a button. Returns '' when there is no
-   usable URL, so callers can just drop it in. */
 function docLink(url,label,opts={}){
   const safe=safeUrl(url);
-  if(!safe) return '';
+  if(!safe)return '';
   const cls=opts.cls||'btn out sm';
   const icon=opts.icon||'&#128196;';
   return `<a class="${cls}" href="${esc(safe)}" target="_blank" rel="noopener noreferrer"
@@ -69,7 +60,8 @@ const F={
     return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
       <input id="f_${name}" name="${name}" type="${opts.type||'text'}" value="${esc(val??'')}"
         ${opts.readonly?'readonly':''} ${opts.placeholder?`placeholder="${esc(opts.placeholder)}"`:''}
-        ${opts.autocomplete?`autocomplete="${opts.autocomplete}"`:''}/>
+        ${opts.autocomplete?`autocomplete="${opts.autocomplete}"`:''}
+        ${opts.oninput?`oninput="${opts.oninput}"`:''}/>
       ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
   num(name,label,val,opts={}){
     return `<label for="f_${name}">${esc(label)}</label>
@@ -83,27 +75,28 @@ const F={
       return `<option value="${esc(v)}" ${String(val??'')===String(v)?'selected':''}>${esc(t)}</option>`;
     }).join('');
     return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
-      <select id="f_${name}" name="${name}">${o}</select>
+      <select id="f_${name}" name="${name}" ${opts.onchange?`onchange="${opts.onchange}"`:''}>${o}</select>
       ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
-  /* Person picker backed by real accounts, with a free-text fallback so
+  /* Person picker backed by real accounts, with free-text fallback so
      an outside contractor can still be named. */
   person(name,label,val,opts={}){
     const names=DB.peopleNames(val);
-    const options=[{v:'',t:opts.emptyLabel||'— nobody assigned —'}]
-      .concat(names.map(n=>({v:n,t:n})));
     if(!names.length){
       return `<label for="f_${name}">${esc(label)}</label>
         <input id="f_${name}" name="${name}" value="${esc(val??'')}" placeholder="Type a name"/>
-        <div class="hint">No accounts loaded — type a name instead.</div>`;
-    }
+        <div class="hint">No accounts loaded — type a name instead.</div>`;}
+    const options=[{v:'',t:opts.emptyLabel||'— nobody assigned —'}].concat(names.map(n=>({v:n,t:n})));
     return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
       <select id="f_${name}" name="${name}">
         ${options.map(x=>`<option value="${esc(x.v)}" ${String(val??'')===String(x.v)?'selected':''}>${esc(x.t)}</option>`).join('')}
       </select>
       ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
-  area(name,label,val,rows=3){
-    return `<label for="f_${name}">${esc(label)}</label>
-      <textarea id="f_${name}" name="${name}" rows="${rows}">${esc(val??'')}</textarea>`;},
+  area(name,label,val,rows=3,opts={}){
+    return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
+      <textarea id="f_${name}" name="${name}" rows="${rows}"
+        ${opts.placeholder?`placeholder="${esc(opts.placeholder)}"`:''}
+        ${opts.oninput?`oninput="${opts.oninput}"`:''}>${esc(val??'')}</textarea>
+      ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
   read(){
     const out={};
     document.querySelectorAll('#drawerBody [name]').forEach(el=>{out[el.name]=el.value.trim();});
@@ -145,18 +138,13 @@ function today(){return new Date().toISOString().slice(0,10);}
 function confirmDelete(msg,fn){if(confirm(msg))fn();}
 
 /* ---------- QR helpers ---------- */
-/* Base URL worked out at runtime, so codes are right on localhost,
-   a preview deploy, and production with nothing to configure. */
 function appBaseUrl(){
   const o=location.origin;
   if(!o||o==='null')return '';
   return o+location.pathname.replace(/index\.html$/,'');
 }
 function assetUrl(id){return appBaseUrl()+'#/asset/'+encodeURIComponent(id);}
-function qrEngineReady(){
-  return typeof QR!=='undefined'&&QR&&typeof QR.toSVG==='function';
-}
-/* Never swallow the reason — a blank tag must be diagnosable. */
+function qrEngineReady(){return typeof QR!=='undefined'&&QR&&typeof QR.toSVG==='function';}
 function qrSvg(text,px){
   if(!qrEngineReady())
     return `<div class="qrfail"><b>QR engine not loaded</b><span>assets/qr.js is missing or failed to load</span></div>`;

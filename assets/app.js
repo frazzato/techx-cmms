@@ -18,13 +18,15 @@ let WO_FILTER = 'all';
 let PM_FILTER = 'all';
 let CAL = { y: new Date().getFullYear(), m: new Date().getMonth(), pms: true };
 let USERS = [];
+let SMART_Q = '';
+let SMART_ASSET = '';
 
 /* ============================================================
    ROUTER
    ============================================================ */
 const ROUTES = {
   home: renderHome, dashboard: renderDashboard, assets: renderAssets, asset: renderAssetDetail,
-  pm: renderPM, parts: renderParts, wo: renderWO, qr: renderQR,
+  pm: renderPM, parts: renderParts, wo: renderWO, qr: renderQR, smart: renderSmart,
   import: renderImport, users: renderUsers, settings: renderSettings, login: renderLogin
 };
 const ADMIN_ROUTES = ['import', 'users'];
@@ -133,7 +135,6 @@ function doLogin() {
     return;
   }
   if (msg) msg.innerHTML = '<div class="note">Signing in…</div>';
-
   DB.login(u.trim(), p).then(user =>
     DB.connect().then(r => {
       if (r.mode === 'cloud') DB.startPolling(15);
@@ -163,20 +164,17 @@ function runDiagnostics() {
     const row = (ok, label) => `<div>${ok ? yes : no} ${label}</div>`;
     let advice = '';
     if (!d.hasDatabaseUrl) {
-      advice = `<b>DATABASE_URL is not set.</b> In Vercel → Settings → Environment Variables,
-        add a variable named exactly <span class="mono">DATABASE_URL</span>, then <b>redeploy</b>.`;
+      advice = `<b>DATABASE_URL is not set.</b> Add it in Vercel → Settings → Environment Variables, then <b>redeploy</b>.`;
     } else if (d.driverLoads === false) {
       advice = `<b>The database driver is missing.</b> Check the ROOT <span class="mono">package.json</span>
         lists <span class="mono">@neondatabase/serverless</span>, and that there is
         <b>no package.json inside api/</b>. Then redeploy.`;
     } else if (!d.databaseReachable) {
-      advice = `<b>The database refused the connection.</b> The connection string may be wrong or the
-        database paused. Copy it again from Vercel → Storage.`;
+      advice = `<b>The database refused the connection.</b> The connection string may be wrong or the database paused.`;
     } else if (!d.hasAdminPassword && d.userCount === 0) {
-      advice = `<b>No accounts exist yet.</b> Add <span class="mono">ADMIN_USERNAME</span>,
-        <span class="mono">ADMIN_PASSWORD</span> and <span class="mono">ADMIN_NAME</span>, then <b>redeploy</b>.`;
+      advice = `<b>No accounts exist yet.</b> Add the three <span class="mono">ADMIN_*</span> variables, then <b>redeploy</b>.`;
     } else if (d.userCount === 0) {
-      advice = `<b>Configured, but no account was created.</b> Redeploy once more so the settings take effect.`;
+      advice = `<b>Configured, but no account was created.</b> Redeploy once more.`;
     } else if (d.ok) {
       advice = `<b>Everything is working.</b> ${d.userCount} account${d.userCount === 1 ? '' : 's'} exist.`;
     }
@@ -193,8 +191,7 @@ function runDiagnostics() {
     </div>`;
   }).catch(e => {
     if (msg) msg.innerHTML = `<div class="note bad"><b>Could not reach the API at all.</b><br>
-      ${esc(e.message)}<br><br>The <span class="mono">api</span> folder is probably missing from the
-      deployment.</div>`;
+      ${esc(e.message)}<br><br>The <span class="mono">api</span> folder is probably missing.</div>`;
   });
 }
 
@@ -231,150 +228,169 @@ function doChangePassword() {
 }
 
 /* ============================================================
-   USERS (admin)
+   SMART ASSIST
+   ------------------------------------------------------------
+   Everything here comes from work orders already closed in this
+   plant. No outside service, no guessing — each line points at a
+   real WO number you can open and read.
    ============================================================ */
-function renderUsers() {
-  if (!USERS.length) refreshUsers();
-  const meU = DB.status().username;
-  const wos = DB.all('wos');
-  const pms = DB.all('pms');
+function smartSetQ(v) { SMART_Q = v; }
+function smartSetAsset(v) { SMART_ASSET = v; }
 
-  /* Workload per person, so an admin can see who is actually carrying work. */
-  const load = name => ({
-    open: wos.filter(w => DB.isActive(w) && (w.assignedTo || '') === name).length,
-    pms: pms.filter(p => (p.tech || '') === name).length
-  });
+function runSmartSearch() {
+  const q = (document.getElementById('smartQ') || {}).value || '';
+  const a = (document.getElementById('smartAsset') || {}).value || '';
+  SMART_Q = q; SMART_ASSET = a;
+  const out = document.getElementById('smartResults');
+  if (!out) return;
 
-  return `
-  <h1 class="page">Users</h1>
-  <p class="sub">${USERS.length ? USERS.length + ' account' + (USERS.length === 1 ? '' : 's') : 'Loading…'}</p>
-  <div class="chipset">
-    <button class="btn filled" onclick="openAddUser()">&#43; Add person</button>
-    <button class="btn out" onclick="refreshUsers()">Refresh</button>
-  </div>
-  <div class="card" style="padding:6px 20px 20px">
-    <h3 class="sec" style="margin-top:16px">Accounts and workload</h3>
-    ${renderTable([
-      { label: 'Name', render: r => `<b>${esc(r.full_name)}</b>${r.username === meU ? ' <span class="chip c-open">you</span>' : ''}` },
-      { label: 'Username', hideSm: true, render: r => `<span class="mono">${esc(r.username)}</span>` },
-      { label: 'Role', render: r => `<span class="chip ${r.role === 'admin' ? 'c-pur' : 'c-open'}">${esc(ROLE_LABEL[r.role] || r.role)}</span>` },
-      { label: 'Open WOs', num: true, render: r => { const n = load(r.full_name).open; return n ? `<b>${n}</b>` : '0'; } },
-      { label: 'PMs owned', num: true, render: r => load(r.full_name).pms },
-      { label: 'Status', render: r => r.active ? '<span class="chip c-done">Active</span>' : '<span class="chip c-hold">Disabled</span>' },
-      { label: 'Last signed in', hideSm: true, render: r => r.last_login ? fmtDateTime(r.last_login) : '<span style="color:var(--muted)">never</span>' },
-      { label: '', render: r => `<button class="btn out sm" onclick="event.stopPropagation();openEditUser('${jsq(r.username)}')">Manage</button>` }
-    ], USERS, { empty: 'No accounts loaded yet.' })}
-  </div>
-  <div class="card">
-    <h3 class="sec">What each role can do</h3>
-    <div class="tablewrap"><table>
-      <thead><tr><th>Action</th><th>Maintenance</th><th>Admin</th></tr></thead>
-      <tbody>
-        <tr><td>View everything</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Create and edit work orders</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Complete work orders and PMs</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Add and edit assets, PMs, parts</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Assign work to anyone</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td><b>Delete</b> anything</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
-        <tr><td><b>Import CSV</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
-        <tr><td><b>Manage users</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
-      </tbody>
-    </table></div>
-    <div class="note">Disabling an account keeps its history. Anything already assigned to that
-    person stays assigned, so a work order never loses its owner just because someone left.</div>
+  if (!q.trim() && !a) {
+    out.innerHTML = `<div class="empty">Describe the problem, or pick a machine, to search past repairs.</div>`;
+    return;
+  }
+  const hits = Insights.similarRepairs({ assetId: a, description: q, limit: 8 });
+  out.innerHTML = renderHits(hits, q);
+}
+
+/* One past repair, rendered so the useful part — what was actually
+   done — is the thing you read first. */
+function hitCard(h) {
+  const w = h.wo;
+  const who = w.assignedTo || w.completedBy || '';
+  const when = w.dateCompleted || w.dateRequested;
+  return `<div class="hit" onclick="editWO('${jsq(w.id)}')">
+    <div class="hit-hd">
+      <b class="mono">${esc(w.id)}</b>
+      <span class="hit-when">${esc(Insights.ago(h.ageDays))}</span>
+      ${w.cause && w.cause !== 'To be determined' ? `<span class="chip c-prog">${esc(w.cause)}</span>` : ''}
+      ${who ? `<span class="hit-who">${esc(who)}</span>` : ''}
+    </div>
+    <div class="hit-desc">${esc(w.description || '')}</div>
+    ${w.notes && w.notes.trim() ? `<div class="hit-notes">${esc(w.notes)}</div>`
+      : `<div class="hit-notes empty-notes">No notes were written on this one.</div>`}
+    <div class="hit-ft">
+      <span>${esc(DB.assetName(w.assetId))}</span>
+      ${w.hours ? `<span>· ${esc(w.hours)}h</span>` : ''}
+      ${w.partsUsed ? `<span>· part ${esc(w.partsUsed)}</span>` : ''}
+      ${when ? `<span>· ${fmtDate(when)}</span>` : ''}
+      <span class="hit-why">${esc(h.reasons.join(' · '))}</span>
+    </div>
   </div>`;
 }
 
-function refreshUsers() {
-  DB.listUsers().then(r => {
-    USERS = r.users || [];
-    DB.fetchPeople().catch(() => {});
-    if ((location.hash || '').startsWith('#/users')) route();
-  }).catch(e => toast(e.message || 'Could not load users'));
-}
-
-function openAddUser() {
-  Modal.open({
-    title: 'Add person',
-    body: `${F.text('name', 'Full name', '', { required: true, placeholder: 'e.g. John Davis' })}
-      ${F.text('username', 'Username', '', { required: true, placeholder: 'e.g. jdavis', autocomplete: 'off' })}
-      ${F.select('role', 'Role', 'maintenance', [
-        { v: 'maintenance', t: 'Maintenance — everyday work' },
-        { v: 'admin', t: 'Admin — everything, including users' }])}
-      ${F.text('password', 'Temporary password', '', { required: true, type: 'text', autocomplete: 'off' })}
-      <div id="userMsg"></div>
-      <div class="note">The full name is what appears in assignment dropdowns, so use the name
-      people actually go by on the floor.</div>`,
-    footer: `<button class="btn filled" onclick="doAddUser()">Create account</button>
-      <button class="btn out" onclick="Modal.close()">Cancel</button>`
-  });
-}
-
-function doAddUser() {
-  const d = F.read();
-  const msg = document.getElementById('userMsg');
-  const show = t => { if (msg) msg.innerHTML = `<div class="note bad">${esc(t)}</div>`; };
-  if (!d.name) return show('Enter their full name.');
-  if (!/^[a-z0-9._-]{3,32}$/.test((d.username || '').toLowerCase()))
-    return show('Username must be 3–32 characters: letters, numbers, dot, dash or underscore.');
-  if ((d.password || '').length < 6) return show('Temporary password must be at least 6 characters.');
-  DB.addUser({ name: d.name, username: d.username.toLowerCase(), role: d.role, password: d.password })
-    .then(() => { Modal.close(); refreshUsers(); toast(d.name + ' can now sign in'); })
-    .catch(e => show(e.message || 'Could not create the account'));
-}
-
-function openEditUser(username) {
-  const u = USERS.find(x => x.username === username);
-  if (!u) return;
-  const isMe = DB.status().username === username;
-  const openWos = DB.all('wos').filter(w => DB.isActive(w) && (w.assignedTo || '') === u.full_name);
-
-  Modal.open({
-    title: 'Manage ' + u.full_name,
-    body: `${F.text('name', 'Full name', u.full_name)}
-      ${F.text('username', 'Username', u.username, { readonly: true })}
-      ${F.select('role', 'Role', u.role, [
-        { v: 'maintenance', t: 'Maintenance — everyday work' },
-        { v: 'admin', t: 'Admin — everything, including users' }])}
-      ${isMe ? '<div class="note">This is your own account. You cannot lock yourself out.</div>' : ''}
-      ${openWos.length ? `<div class="note"><b>${openWos.length} open work order${openWos.length === 1 ? '' : 's'}</b>
-        assigned to this person. Disabling the account does not unassign them — reassign first if
-        someone else needs to pick the work up.</div>` : ''}
-      <div id="userMsg"></div>
-      <h3 class="sec" style="margin-top:22px">Reset password</h3>
-      ${F.text('password', 'New temporary password', '', { type: 'text', autocomplete: 'off', placeholder: 'leave blank to keep current' })}
-      <div class="note">Resetting signs them out everywhere and asks them to pick a new password.</div>`,
-    footer: `<button class="btn filled" onclick="doUpdateUser('${jsq(username)}')">Save changes</button>
-      <button class="btn out" onclick="Modal.close()">Cancel</button>
-      ${!isMe ? (u.active
-        ? `<button class="btn bad" style="margin-left:auto" onclick="setUserActive('${jsq(username)}',false)">Disable</button>`
-        : `<button class="btn ok" style="margin-left:auto" onclick="setUserActive('${jsq(username)}',true)">Re-enable</button>`) : ''}`
-  });
-}
-
-function doUpdateUser(username) {
-  const d = F.read();
-  const msg = document.getElementById('userMsg');
-  const show = t => { if (msg) msg.innerHTML = `<div class="note bad">${esc(t)}</div>`; };
-  const payload = { username, name: d.name, role: d.role };
-  if (d.password) {
-    if (d.password.length < 6) return show('Password must be at least 6 characters.');
-    payload.password = d.password;
+function renderHits(hits, q) {
+  if (!hits.length) {
+    return `<div class="empty">
+      <b style="display:block;color:var(--ink);margin-bottom:6px">Nothing similar on record</b>
+      ${q ? 'No closed work order matches that description yet.' : 'No history for that machine yet.'}
+      <br><small>Once this job is closed with good notes, it will show up here next time.</small>
+    </div>`;
   }
-  DB.updateUser(payload)
-    .then(() => { Modal.close(); refreshUsers(); toast('Account updated'); })
-    .catch(e => show(e.message || 'Could not update the account'));
+  return `<div class="hits">${hits.map(hitCard).join('')}</div>`;
 }
 
-function setUserActive(username, active) {
-  const u = USERS.find(x => x.username === username);
-  const msg = active ? `Re-enable ${u ? u.full_name : username}?`
-    : `Disable ${u ? u.full_name : username}?\n\nThey will be signed out immediately and cannot sign back in. Their work history and assignments stay.`;
-  confirmDelete(msg, () => {
-    DB.updateUser({ username, active })
-      .then(() => { Modal.close(); refreshUsers(); toast(active ? 'Account re-enabled' : 'Account disabled'); })
-      .catch(e => toast(e.message || 'Could not change the account'));
-  });
+function renderSmart() {
+  const q = Insights.dataQuality();
+  const repeats = Insights.repeatFailures();
+  const assets = DB.all('assets');
+
+  return `
+  <h1 class="page">Smart Assist</h1>
+  <p class="sub">Patterns from work already closed in this plant. Every result is a real work order you can open.</p>
+
+  <div class="card smartcard">
+    <h3 class="sec">Seen this before?</h3>
+    <div class="f2">
+      <div>
+        <label for="smartQ">Describe the problem</label>
+        <input id="smartQ" value="${esc(SMART_Q)}" placeholder="e.g. bad welds on station 2"
+          onkeydown="if(event.key==='Enter')runSmartSearch()"/>
+      </div>
+      <div>
+        ${F.select('smartAsset', 'On which machine (optional)', SMART_ASSET, assetOptions())}
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn filled" onclick="runSmartSearch()">&#128269; Search past repairs</button>
+      <button class="btn out" onclick="document.getElementById('smartQ').value='';document.getElementById('f_smartAsset').value='';runSmartSearch()">Clear</button>
+    </div>
+    <div id="smartResults" style="margin-top:18px">
+      <div class="empty">Describe the problem, or pick a machine, to search past repairs.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 class="sec">Recurring problems — same machine, same cause, 3+ times in a year</h3>
+    ${repeats.length ? `<div class="repeats">
+      ${repeats.map(r => `<div class="repeat" onclick="openAsset('${jsq(r.assetId)}')">
+        <div class="repeat-hd">
+          <span class="chip c-crit">${r.count}×</span>
+          <b>${esc(DB.assetName(r.assetId))}</b>
+          <span class="mono" style="color:var(--muted)">${esc(r.assetId)}</span>
+        </div>
+        <div class="repeat-cause">${esc(r.cause)}</div>
+        <div class="repeat-ft">
+          ${r.hours ? `<span><b>${r.hours.toFixed(1)}h</b> total</span>` : ''}
+          ${r.cost ? `<span>· <b>$${r.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</b></span>` : ''}
+          ${r.avgGap ? `<span>· roughly every <b>${r.avgGap} days</b></span>` : ''}
+          <span>· last ${fmtDate(r.last)}</span>
+        </div>
+        <div class="repeat-wos">${r.wos.map(w => `<span class="mono">${esc(w.id)}</span>`).join(' ')}</div>
+      </div>`).join('')}
+    </div>
+    <div class="note">Something failing this often is usually a root-cause problem, not bad luck.
+    Worth a design change, a different part, or a PM that catches it earlier.</div>`
+    : `<div class="empty">No recurring pattern found.
+        <br><small>A pattern appears when the same cause hits the same machine three times within a year.</small></div>`}
+  </div>
+
+  <div class="card">
+    <h3 class="sec">How useful this can be</h3>
+    <p style="color:var(--muted);margin:0 0 14px;font-size:13px;line-height:1.7">
+      Smart Assist can only find what your team wrote down. A work order closed with
+      <i>"fixed it"</i> and no cause teaches nobody anything next time.
+    </p>
+    <div class="bar"><i style="width:${q.pct}%;background:${q.pct >= 70 ? 'var(--ok)' : q.pct >= 40 ? 'var(--warn)' : 'var(--bad)'}"></i></div>
+    <div class="quality">
+      <span><b>${q.usable}</b> of <b>${q.done}</b> closed work orders have both a cause and real notes — <b>${q.pct}%</b></span>
+    </div>
+    ${q.done === 0 ? `<div class="note">No completed work orders yet. This fills in as your team closes jobs.</div>`
+      : q.pct < 60 ? `<div class="note bad">
+        <b>${q.noNotes} closed work order${q.noNotes === 1 ? '' : 's'} have no real notes.</b>
+        The single highest-value habit here is writing one honest line at close:
+        what you found, and what you actually did about it.</div>`
+      : `<div class="note">Good documentation rate. That is what makes the matches above worth reading.</div>`}
+  </div>
+
+  <div class="card">
+    <h3 class="sec">What this is, and is not</h3>
+    <div class="tablewrap"><table><tbody>
+      <tr><td>&#10003; Searches your own closed work orders</td></tr>
+      <tr><td>&#10003; Every result links to a real WO number</td></tr>
+      <tr><td>&#10003; Runs on this device — nothing leaves the plant</td></tr>
+      <tr><td>&#10003; Works offline</td></tr>
+      <tr><td style="color:var(--muted)">— It does not invent repairs or suggest fixes it has not seen</td></tr>
+      <tr><td style="color:var(--muted)">— It cannot read your PDF manuals (yet)</td></tr>
+    </tbody></table></div>
+  </div>`;
+}
+
+/* Panel embedded in the work order form. */
+function similarPanel(assetId, description, cause, excludeId) {
+  const hits = Insights.similarRepairs({ assetId, description, cause, excludeId, limit: 4 });
+  if (!hits.length) return '';
+  return `<div class="seenbefore">
+    <div class="seen-hd">&#128161; Seen before — ${hits.length} similar repair${hits.length === 1 ? '' : 's'}</div>
+    ${hits.map(hitCard).join('')}
+  </div>`;
+}
+
+/* Re-run as the technician types the description. */
+function refreshSimilar(excludeId) {
+  const box = document.getElementById('similarBox');
+  if (!box) return;
+  const d = F.read();
+  box.innerHTML = similarPanel(d.assetId || '', d.description || '', d.cause || '', excludeId || '');
 }
 
 /* ============================================================
@@ -389,6 +405,7 @@ function renderHome() {
   const meName = DB.getWho();
   const myWos = wos.filter(w => DB.isActive(w) && (w.assignedTo || '') === meName);
   const myPms = pms.filter(p => (p.tech || '') === meName && (DB.daysUntil(p.nextDue) ?? 99) <= 14);
+  const repeats = Insights.repeatFailures();
 
   if (!assets.length && !wos.length) {
     return `<h1 class="page">Welcome, ${esc(meName)}</h1>
@@ -421,11 +438,15 @@ function renderHome() {
       <ul><li>${openWos.length} pending · ${progWos.length} in progress</li>
       <li>Assigned to a named person</li><li>Generate a WO from any PM</li></ul>
     </a>
-    <div class="tile soon">
-      <div class="ic">&#129302;</div><h2>AI Assist</h2>
-      <p>Troubleshooting, fault, cause and corrective action — reserved for a later phase.</p>
-      <ul><li>Not connected yet</li></ul>
-    </div>
+    <a class="tile smart" href="#/smart">
+      <div class="ic">&#128161;</div><h2>Smart Assist</h2>
+      <p>Has this happened before? Search what your team already fixed.</p>
+      <ul>
+        <li>Similar past repairs, with notes</li>
+        <li>${repeats.length ? `<b>${repeats.length} recurring problem${repeats.length === 1 ? '' : 's'} found</b>` : 'Recurring-failure detection'}</li>
+        <li>Who fixed it last time</li>
+      </ul>
+    </a>
   </div>
 
   <div class="grid g4" style="margin-bottom:20px">
@@ -437,6 +458,12 @@ function renderHome() {
     <div class="stat click" onclick="location.hash='#/pm'">
       <div class="n" style="color:${duePms.length ? 'var(--bad)' : 'inherit'}">${duePms.length}</div><div class="l">PMs due within 7 days</div></div>
   </div>
+
+  ${repeats.length ? `<div class="note bad">
+    <b>${repeats.length} recurring failure${repeats.length === 1 ? '' : 's'} detected.</b>
+    ${esc(DB.assetName(repeats[0].assetId))} has had <b>${esc(repeats[0].cause)}</b> ${repeats[0].count} times.
+    <a href="#/smart">Look at the pattern</a>.
+  </div>` : ''}
 
   ${(myWos.length || myPms.length) ? `<div class="card">
     <h3 class="sec">Your work</h3>
@@ -465,7 +492,7 @@ function renderHome() {
     <div class="actions" style="margin-top:0">
       <button class="btn filled" onclick="editWO()">&#43; New work order</button>
       <button class="btn out" onclick="editAsset()">&#43; New asset</button>
-      <a class="btn out" href="#/wo">Work order calendar</a>
+      <a class="btn out" href="#/smart">Search past repairs</a>
       <a class="btn out" href="#/qr">Print QR tags</a>
     </div>
   </div>`;
@@ -482,6 +509,7 @@ function renderDashboard() {
   const lowParts = parts.filter(p => DB.partStatus(p).label === 'Low stock');
   const uncounted = parts.filter(p => DB.num(p.qty) === null);
   const unassigned = openWos.filter(w => !w.assignedTo);
+  const repeats = Insights.repeatFailures();
 
   const stat = (ic, bg, col, n, l, d) => `
     <div class="stat"><div class="ic" style="background:${bg};color:${col}">${ic}</div>
@@ -499,9 +527,22 @@ function renderDashboard() {
       lowParts.length,'Parts at or below min',uncounted.length+' never counted')}
   </div>
 
+  ${repeats.length ? `<div class="card">
+    <h3 class="sec">Recurring failures</h3>
+    ${renderTable([
+      { label: 'Machine', render: r => `<b>${esc(DB.assetName(r.assetId))}</b><br><small class="mono" style="color:var(--muted)">${esc(r.assetId)}</small>` },
+      { label: 'Cause', render: r => `<span class="chip c-crit">${esc(r.cause)}</span>` },
+      { label: 'Times', num: true, render: r => `<b>${r.count}</b>` },
+      { label: 'Hours', num: true, render: r => r.hours.toFixed(1) },
+      { label: 'Every', hideSm: true, render: r => r.avgGap ? '~' + r.avgGap + ' days' : '—' },
+      { label: 'Last', hideSm: true, render: r => fmtDate(r.last) }
+    ], repeats, { onRow: 'openAsset' })}
+    <div class="actions"><a class="btn out sm" href="#/smart">Open Smart Assist</a></div>
+  </div>` : ''}
+
   ${unassigned.length ? `<div class="note bad">
     <b>${unassigned.length} open work order${unassigned.length === 1 ? '' : 's'} with nobody assigned.</b>
-    Work without an owner tends not to get done — open them and pick a technician.
+    Work without an owner tends not to get done.
     <a href="#" onclick="WO_FILTER='unassigned';location.hash='#/wo';return false;">Show them</a>.
   </div>` : ''}
 
@@ -553,7 +594,6 @@ function statusChip(s) {
   const c = s === 'Completed' ? 'c-done' : s === 'In Progress' ? 'c-prog' : s === 'Open' ? 'c-open' : 'c-hold';
   return `<span class="chip ${c}">${esc(s || 'Open')}</span>`;
 }
-/* Small marker showing a record has a document attached. */
 function docChip(url, label) {
   return safeUrl(url) ? `<span class="chip c-open" title="${esc(label || 'Document attached')}">&#128196;</span>` : '';
 }
@@ -582,10 +622,9 @@ function renderAssets() {
       { label: 'Equipment name', render: r => `<b>${esc(r.name || '—')}</b>${r.location ? `<br><small style="color:var(--muted)">${esc(r.location)}</small>` : ''}` },
       { label: 'Owner', hideSm: true, render: r => r.owner ? esc(r.owner) : '<span style="color:var(--muted)">—</span>' },
       { label: 'Docs', render: r => {
-          const bits = [];
-          if (safeUrl(r.manualUrl)) bits.push(docLink(r.manualUrl, 'Manual', { cls: 'btn out sm' }));
-          else if (safeUrl(r.drawingUrl)) bits.push(docLink(r.drawingUrl, 'Drawing', { cls: 'btn out sm' }));
-          return bits.join(' ') || '<span style="color:var(--muted)">—</span>'; } },
+          if (safeUrl(r.manualUrl)) return docLink(r.manualUrl, 'Manual', { cls: 'btn out sm' });
+          if (safeUrl(r.drawingUrl)) return docLink(r.drawingUrl, 'Drawing', { cls: 'btn out sm' });
+          return '<span style="color:var(--muted)">—</span>'; } },
       { label: 'Status', render: r => `<span class="chip ${r.status==='Down'?'c-crit':r.status==='Retired'?'c-hold':'c-done'}">${esc(r.status || 'Active')}</span>` },
       { label: 'Open WOs', num: true, render: r => {
           const n = DB.forAsset('wos', r.id).filter(DB.isActive).length;
@@ -614,8 +653,10 @@ function renderAssetDetail(id) {
   const incoming = pms.filter(p => { const d = DB.daysUntil(p.nextDue); return d !== null && d >= 0 && d <= 30; });
   const recentRepairs = done.sort((x, y) => (y.dateCompleted || '').localeCompare(x.dateCompleted || '')).slice(0, 5);
   const lowParts = parts.filter(p => DB.partStatus(p).label === 'Low stock').length;
-
   const hasDocs = safeUrl(a.manualUrl) || safeUrl(a.drawingUrl);
+
+  const health = Insights.assetHealth(id);
+  const myRepeats = Insights.repeatFailures().filter(r => r.assetId === id);
 
   return `
   <div class="crumb"><a href="#/home">Home</a> › <a href="#/assets">Assets</a> › ${esc(a.id)}</div>
@@ -637,14 +678,20 @@ function renderAssetDetail(id) {
     </div>
   </div>
 
+  ${myRepeats.length ? `<div class="note bad">
+    <b>Recurring problem on this machine.</b>
+    ${myRepeats.map(r => `<b>${esc(r.cause)}</b> ${r.count} times${r.avgGap ? `, roughly every ${r.avgGap} days` : ''}`).join('; ')}.
+    <a href="#/smart">See the pattern</a>.
+  </div>` : ''}
+
   ${hasDocs ? `<div class="card doccard">
     <h3 class="sec">Documentation</h3>
     <div class="actions" style="margin-top:0">
       ${docLink(a.manualUrl, 'Machine manual', { cls: 'btn filled', icon: '&#128214;' })}
       ${docLink(a.drawingUrl, 'Drawings / schematics', { cls: 'btn tonal', icon: '&#128208;' })}
     </div>
-    <div class="note">Documents open from where they are stored. If you are outside the plant
-    network you may be asked to sign in to view them.</div>
+    <div class="note">Documents open from where they are stored. Outside the plant network
+    you may be asked to sign in.</div>
   </div>` : `<div class="card">
     <h3 class="sec">Documentation</h3>
     <div class="empty" style="padding:20px">No manual or drawings linked yet.
@@ -659,6 +706,7 @@ function renderAssetDetail(id) {
     <button class="btn tonal" onclick="newPMFor('${jsq(a.id)}')">&#43; Add PM</button>
     <button class="btn out" onclick="newPartFor('${jsq(a.id)}')">&#43; Add part</button>
     <button class="btn out" onclick="editAsset('${jsq(a.id)}')">Edit asset</button>
+    <button class="btn out" onclick="smartForAsset('${jsq(a.id)}')">&#128161; Past repairs</button>
   </div>
 
   <div class="grid g4" style="margin-bottom:20px">
@@ -672,8 +720,29 @@ function renderAssetDetail(id) {
       <div class="d">${pms.length} on the program</div></div>
     <div class="stat"><div class="ic" style="background:var(--ok-c);color:var(--ok)">&#9989;</div>
       <div class="n">${done.length}</div><div class="l">Completed</div>
-      <div class="d">${done.reduce((s,w)=>s+(DB.num(w.hours)||0),0).toFixed(1)}h logged</div></div>
+      <div class="d">${health.hours.toFixed(1)}h logged</div></div>
   </div>
+
+  ${health.total >= 2 ? `<div class="card smartcard">
+    <h3 class="sec">&#128161; Failure profile — from ${health.total} completed repairs</h3>
+    <div class="grid g2" style="gap:14px">
+      <div>
+        ${health.topCauses.length ? `<div class="profile-label">Most common causes</div>
+          ${health.topCauses.slice(0, 4).map(c => `<div class="profile-row">
+            <span>${esc(c.cause)}</span>
+            <b>${c.count}×</b>
+          </div>`).join('')}` : '<div class="profile-label">No causes recorded yet</div>'}
+      </div>
+      <div>
+        ${health.meanGap ? `<div class="profile-row"><span>Average time between repairs</span><b>${health.meanGap} days</b></div>` : ''}
+        ${health.cost ? `<div class="profile-row"><span>Recorded repair cost</span><b>$${health.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</b></div>` : ''}
+        ${health.lastRepair ? `<div class="profile-row"><span>Last repair</span><b>${fmtDate(health.lastRepair)}</b></div>` : ''}
+        ${health.topPeople.length ? `<div class="profile-row"><span>Knows this machine best</span><b>${esc(health.topPeople[0].name)}</b></div>` : ''}
+      </div>
+    </div>
+    ${health.undocumented ? `<div class="note">${health.undocumented} of these were closed without real notes,
+      so there is less here than there could be.</div>` : ''}
+  </div>` : ''}
 
   <div class="grid g2">
     <div class="card"><h3 class="sec">Recent repairs — last 5 completed</h3>
@@ -718,6 +787,16 @@ function renderAssetDetail(id) {
       { label: 'Status', render: r => { const s = DB.partStatus(r); return `<span class="chip ${s.cls}">${s.label}</span>`; } }
     ], parts, { empty: 'No parts linked to this asset yet.', onRow: 'editPart' })}
   </div>`;
+}
+
+function smartForAsset(id) {
+  SMART_ASSET = id; SMART_Q = '';
+  location.hash = '#/smart';
+  setTimeout(() => {
+    const sel = document.getElementById('f_smartAsset');
+    if (sel) sel.value = id;
+    runSmartSearch();
+  }, 60);
 }
 
 function newWOFor(a) { editWO(null, a); }
@@ -765,8 +844,7 @@ function renderQR() {
   </div>
   <div class="note hide-print" style="margin-top:0">
     Codes point at <span class="mono">${esc(base)}</span> —
-    <b>scan one on screen with your phone before printing</b> to confirm it opens the right asset.
-    Print at 100% scale, not "fit to page".
+    <b>scan one on screen with your phone before printing</b>. Print at 100% scale, not "fit to page".
   </div>
   <div class="card">
     <div class="tagsheet">
@@ -815,7 +893,6 @@ function downloadTag(id) {
    ASSET form
    ============================================================ */
 function editAsset(id) {
-  /* The record can be gone — a stale QR link, or someone else deleted it. */
   if (id && !DB.get('assets', id)) { toast('That asset no longer exists'); route(); return; }
   const a = id ? DB.get('assets', id) : {};
   const isNew = !id;
@@ -826,7 +903,7 @@ function editAsset(id) {
       ${F.text('name','Equipment name',a.name,{required:true,placeholder:'e.g. Top Roll Assembly'})}
       <div class="f2">
         <div>${F.text('manufacturer','Manufacturer',a.manufacturer)}</div>
-        <div>${F.text('model','Model',a.model)}</div>
+        <div>${F.text('model','Model',a.model,{hint:'Machines sharing a model are matched together in Smart Assist.'})}</div>
         <div>${F.text('serial','Serial number',a.serial)}</div>
         <div>${F.text('project','Project number',a.project)}</div>
         <div>${F.text('location','Location / line',a.location)}</div>
@@ -858,8 +935,6 @@ function saveAsset(isNew) {
   const d = F.read();
   if (!d.id || !d.name) { toast('Asset ID and equipment name are required'); return; }
   if (isNew && DB.get('assets', d.id)) { toast('That asset ID already exists'); return; }
-  /* Reject links that would not open as a normal web address, rather than
-     saving something that silently does nothing when clicked. */
   if (d.manualUrl && !safeUrl(d.manualUrl)) { toast('The manual link is not a valid web address'); return; }
   if (d.drawingUrl && !safeUrl(d.drawingUrl)) { toast('The drawings link is not a valid web address'); return; }
   DB.upsert('assets', d);
@@ -912,7 +987,7 @@ function renderPM() {
   </div>
   ${unassigned && PM_FILTER === 'all' ? `<div class="note">
     <b>${unassigned} PM${unassigned === 1 ? ' has' : 's have'} nobody responsible.</b>
-    A schedule without an owner rarely gets done — assign a technician to each one.</div>` : ''}
+    A schedule without an owner rarely gets done.</div>` : ''}
   <div class="card" style="padding:6px 20px 20px">
     <h3 class="sec" style="margin-top:16px">${PM_FILTER==='all'?'Schedule':PM_FILTER==='mine'?'Your PMs':PM_FILTER==='overdue'?'Overdue':'Nobody responsible'}</h3>
     ${renderTable([
@@ -933,7 +1008,6 @@ function editPM(id, presetAsset) {
   if (id && !DB.get('pms', id)) { toast('That PM no longer exists'); route(); return; }
   const p = id ? DB.get('pms', id) : {};
   const isNew = !id;
-  /* Default the owner to whoever owns the asset, so a new PM is rarely orphaned. */
   const asset = DB.get('assets', p.assetId || presetAsset || '');
   const defaultTech = p.tech || (isNew && asset ? (asset.owner || '') : '');
 
@@ -985,7 +1059,6 @@ function genWO(pmId) {
     id: DB.nextId('wos', 'WO-', 4), assetId: p.assetId,
     description: p.description || ('PM ' + p.id), type: 'Preventive',
     priority: (DB.daysUntil(p.nextDue) ?? 99) < 0 ? 'High' : 'Medium',
-    /* Carry the PM's responsible person and procedure onto the work order. */
     assignedTo: p.tech || '', docUrl: p.procedureUrl || '',
     requestedBy: DB.getWho(),
     dateRequested: today(), dateDue: p.nextDue || today(),
@@ -1221,19 +1294,23 @@ function editWO(id, presetAsset) {
   const partOpts = [{ v: '', t: '— none —' }].concat(
     DB.all('parts').filter(p => !w.assetId || !p.assetId || p.assetId === w.assetId || p.assetId === presetAsset)
       .map(p => ({ v: p.id, t: p.id + ' · ' + (p.description || '') })));
-  /* Offer the asset's manual right on the work order — the tech is usually
-     standing at the machine when they open this. */
   const asset = DB.get('assets', w.assetId || presetAsset || '');
+  const exclude = w.id || '';
 
   Modal.open({
     title: isNew ? 'New work order' : 'Work order ' + w.id,
     body: `${F.text('id','Work order number',w.id || DB.nextId('wos','WO-',4),{required:true,readonly:!isNew})}
-      ${F.select('assetId','Asset',w.assetId||presetAsset||'',assetOptions(),{required:true})}
+      ${F.select('assetId','Asset',w.assetId||presetAsset||'',assetOptions(),
+        {required:true,onchange:`refreshSimilar('${jsq(exclude)}')`})}
       ${asset && (safeUrl(asset.manualUrl)||safeUrl(asset.drawingUrl)) ? `<div class="actions" style="margin-top:10px">
         ${docLink(asset.manualUrl,'Machine manual',{cls:'btn tonal sm',icon:'&#128214;'})}
         ${docLink(asset.drawingUrl,'Drawings',{cls:'btn tonal sm',icon:'&#128208;'})}
       </div>` : ''}
-      ${F.area('description','Description of work',w.description,3)}
+      ${F.area('description','Description of work',w.description,3,
+        {oninput:`refreshSimilar('${jsq(exclude)}')`})}
+
+      <div id="similarBox">${similarPanel(w.assetId||presetAsset||'', w.description||'', w.cause||'', exclude)}</div>
+
       <div class="f2">
         <div>${F.select('type','Work type',w.type||'Repair',WO_TYPES)}</div>
         <div>${F.select('priority','Priority',w.priority||'Medium',PRIORITIES)}</div>
@@ -1250,13 +1327,16 @@ function editWO(id, presetAsset) {
         <div>${F.num('hours','Labour hours',w.hours,{step:'0.5'})}</div>
         <div>${F.num('cost','Cost',w.cost,{step:'0.01'})}</div>
       </div>
-      ${F.select('cause','Cause of failure',w.cause||'To be determined',CAUSES)}
+      ${F.select('cause','Cause of failure',w.cause||'To be determined',CAUSES,
+        {onchange:`refreshSimilar('${jsq(exclude)}')`})}
       ${F.select('partsUsed','Parts used',w.partsUsed,partOpts)}
+      ${F.area('notes','What you found and what you did',w.notes,4,
+        {placeholder:'e.g. Sonotrode face was pitted. Swapped in CT_12672, retorqued stack to 45 Nm, ran 20 test welds.',
+         hint:'This is what the next person sees when the same thing happens again. One honest line is enough.'})}
       ${F.text('docUrl','Reference document link',w.docUrl,
         {placeholder:'https://iacgroup.sharepoint.com/...',hint:LINK_HINT})}
       ${safeUrl(w.docUrl) ? `<div class="actions" style="margin-top:12px">
         ${docLink(w.docUrl,'Open document',{cls:'btn tonal sm'})}</div>` : ''}
-      ${F.area('notes','Technician notes',w.notes,3)}
       ${w.pmId ? `<div class="note">Generated from PM <b>${esc(w.pmId)}</b>. Completing this rolls that PM forward.</div>` : ''}
       ${!isNew && w.updatedBy ? `<div class="note">Last changed by <b>${esc(w.updatedBy)}</b></div>` : ''}`,
     footer: `<button class="btn filled" onclick="saveWO(${isNew})">Save work order</button>
@@ -1278,9 +1358,18 @@ function saveWO(isNew) {
 function closeWO(id) {
   const d = F.read();
   if (!d.cause || d.cause === 'To be determined') { toast('Record a cause of failure before completing'); return; }
+  /* Notes are what make Smart Assist worth anything next time. Nudge
+     firmly, but let a determined person through — a hard block would
+     just get worked around with a full stop in the box. */
+  if (!d.notes || d.notes.trim().length < 10) {
+    if (!confirm('No notes written.\n\nWhat you found and what you did is what the next person sees when this happens again. Right now they would get nothing.\n\nClose it anyway?')) {
+      const el = document.getElementById('f_notes');
+      if (el) el.focus();
+      return;
+    }
+  }
   d.status = 'Completed';
   if (!d.dateCompleted) d.dateCompleted = today();
-  /* If nobody was assigned, the person closing it did the work. */
   if (!d.assignedTo) d.assignedTo = DB.getWho();
   d.completedBy = DB.getWho();
   DB.upsert('wos', d);
@@ -1312,8 +1401,7 @@ function renderImport() {
     <div class="chipset">${Object.keys(ENTITY_LABEL).map(e =>
       `<button class="fchip ${IMPORT.entity===e?'on':''}" onclick="setImportEntity('${e}')">${ENTITY_LABEL[e]}</button>`).join('')}</div>
     <div class="note">Recognised fields for <b>${ENTITY_LABEL[IMPORT.entity]}</b>: <span class="mono">${fieldList(IMPORT.entity)}</span>.
-      Document links import too — a column called <span class="mono">Manual</span> or
-      <span class="mono">SharePoint Link</span> maps automatically.</div>
+      Importing historical work orders with their notes and causes feeds Smart Assist immediately.</div>
   </div>
   <div class="card">
     <h3 class="sec">2 · Load the file</h3>
@@ -1405,6 +1493,149 @@ function exportCSV(entity) {
 }
 
 /* ============================================================
+   USERS (admin)
+   ============================================================ */
+function renderUsers() {
+  if (!USERS.length) refreshUsers();
+  const meU = DB.status().username;
+  const wos = DB.all('wos');
+  const pms = DB.all('pms');
+  const load = name => ({
+    open: wos.filter(w => DB.isActive(w) && (w.assignedTo || '') === name).length,
+    pms: pms.filter(p => (p.tech || '') === name).length
+  });
+
+  return `
+  <h1 class="page">Users</h1>
+  <p class="sub">${USERS.length ? USERS.length + ' account' + (USERS.length === 1 ? '' : 's') : 'Loading…'}</p>
+  <div class="chipset">
+    <button class="btn filled" onclick="openAddUser()">&#43; Add person</button>
+    <button class="btn out" onclick="refreshUsers()">Refresh</button>
+  </div>
+  <div class="card" style="padding:6px 20px 20px">
+    <h3 class="sec" style="margin-top:16px">Accounts and workload</h3>
+    ${renderTable([
+      { label: 'Name', render: r => `<b>${esc(r.full_name)}</b>${r.username === meU ? ' <span class="chip c-open">you</span>' : ''}` },
+      { label: 'Username', hideSm: true, render: r => `<span class="mono">${esc(r.username)}</span>` },
+      { label: 'Role', render: r => `<span class="chip ${r.role === 'admin' ? 'c-pur' : 'c-open'}">${esc(ROLE_LABEL[r.role] || r.role)}</span>` },
+      { label: 'Open WOs', num: true, render: r => { const n = load(r.full_name).open; return n ? `<b>${n}</b>` : '0'; } },
+      { label: 'PMs owned', num: true, render: r => load(r.full_name).pms },
+      { label: 'Status', render: r => r.active ? '<span class="chip c-done">Active</span>' : '<span class="chip c-hold">Disabled</span>' },
+      { label: 'Last signed in', hideSm: true, render: r => r.last_login ? fmtDateTime(r.last_login) : '<span style="color:var(--muted)">never</span>' },
+      { label: '', render: r => `<button class="btn out sm" onclick="event.stopPropagation();openEditUser('${jsq(r.username)}')">Manage</button>` }
+    ], USERS, { empty: 'No accounts loaded yet.' })}
+  </div>
+  <div class="card">
+    <h3 class="sec">What each role can do</h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Action</th><th>Maintenance</th><th>Admin</th></tr></thead>
+      <tbody>
+        <tr><td>View everything, including Smart Assist</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Create and edit work orders</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Complete work orders and PMs</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Add and edit assets, PMs, parts</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Assign work to anyone</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td><b>Delete</b> anything</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
+        <tr><td><b>Import CSV</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
+        <tr><td><b>Manage users</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
+      </tbody>
+    </table></div>
+  </div>`;
+}
+
+function refreshUsers() {
+  DB.listUsers().then(r => {
+    USERS = r.users || [];
+    DB.fetchPeople().catch(() => {});
+    if ((location.hash || '').startsWith('#/users')) route();
+  }).catch(e => toast(e.message || 'Could not load users'));
+}
+
+function openAddUser() {
+  Modal.open({
+    title: 'Add person',
+    body: `${F.text('name', 'Full name', '', { required: true, placeholder: 'e.g. John Davis' })}
+      ${F.text('username', 'Username', '', { required: true, placeholder: 'e.g. jdavis', autocomplete: 'off' })}
+      ${F.select('role', 'Role', 'maintenance', [
+        { v: 'maintenance', t: 'Maintenance — everyday work' },
+        { v: 'admin', t: 'Admin — everything, including users' }])}
+      ${F.text('password', 'Temporary password', '', { required: true, type: 'text', autocomplete: 'off' })}
+      <div id="userMsg"></div>
+      <div class="note">The full name is what appears in assignment dropdowns and on past repairs,
+      so use the name people actually go by.</div>`,
+    footer: `<button class="btn filled" onclick="doAddUser()">Create account</button>
+      <button class="btn out" onclick="Modal.close()">Cancel</button>`
+  });
+}
+
+function doAddUser() {
+  const d = F.read();
+  const msg = document.getElementById('userMsg');
+  const show = t => { if (msg) msg.innerHTML = `<div class="note bad">${esc(t)}</div>`; };
+  if (!d.name) return show('Enter their full name.');
+  if (!/^[a-z0-9._-]{3,32}$/.test((d.username || '').toLowerCase()))
+    return show('Username must be 3–32 characters: letters, numbers, dot, dash or underscore.');
+  if ((d.password || '').length < 6) return show('Temporary password must be at least 6 characters.');
+  DB.addUser({ name: d.name, username: d.username.toLowerCase(), role: d.role, password: d.password })
+    .then(() => { Modal.close(); refreshUsers(); toast(d.name + ' can now sign in'); })
+    .catch(e => show(e.message || 'Could not create the account'));
+}
+
+function openEditUser(username) {
+  const u = USERS.find(x => x.username === username);
+  if (!u) return;
+  const isMe = DB.status().username === username;
+  const openWos = DB.all('wos').filter(w => DB.isActive(w) && (w.assignedTo || '') === u.full_name);
+
+  Modal.open({
+    title: 'Manage ' + u.full_name,
+    body: `${F.text('name', 'Full name', u.full_name)}
+      ${F.text('username', 'Username', u.username, { readonly: true })}
+      ${F.select('role', 'Role', u.role, [
+        { v: 'maintenance', t: 'Maintenance — everyday work' },
+        { v: 'admin', t: 'Admin — everything, including users' }])}
+      ${isMe ? '<div class="note">This is your own account. You cannot lock yourself out.</div>' : ''}
+      ${openWos.length ? `<div class="note"><b>${openWos.length} open work order${openWos.length === 1 ? '' : 's'}</b>
+        assigned to this person. Disabling does not unassign them — reassign first if someone else
+        needs to pick the work up.</div>` : ''}
+      <div id="userMsg"></div>
+      <h3 class="sec" style="margin-top:22px">Reset password</h3>
+      ${F.text('password', 'New temporary password', '', { type: 'text', autocomplete: 'off', placeholder: 'leave blank to keep current' })}
+      <div class="note">Resetting signs them out everywhere and asks them to pick a new password.</div>`,
+    footer: `<button class="btn filled" onclick="doUpdateUser('${jsq(username)}')">Save changes</button>
+      <button class="btn out" onclick="Modal.close()">Cancel</button>
+      ${!isMe ? (u.active
+        ? `<button class="btn bad" style="margin-left:auto" onclick="setUserActive('${jsq(username)}',false)">Disable</button>`
+        : `<button class="btn ok" style="margin-left:auto" onclick="setUserActive('${jsq(username)}',true)">Re-enable</button>`) : ''}`
+  });
+}
+
+function doUpdateUser(username) {
+  const d = F.read();
+  const msg = document.getElementById('userMsg');
+  const show = t => { if (msg) msg.innerHTML = `<div class="note bad">${esc(t)}</div>`; };
+  const payload = { username, name: d.name, role: d.role };
+  if (d.password) {
+    if (d.password.length < 6) return show('Password must be at least 6 characters.');
+    payload.password = d.password;
+  }
+  DB.updateUser(payload)
+    .then(() => { Modal.close(); refreshUsers(); toast('Account updated'); })
+    .catch(e => show(e.message || 'Could not update the account'));
+}
+
+function setUserActive(username, active) {
+  const u = USERS.find(x => x.username === username);
+  const msg = active ? `Re-enable ${u ? u.full_name : username}?`
+    : `Disable ${u ? u.full_name : username}?\n\nThey will be signed out immediately and cannot sign back in. Their work history and assignments stay.`;
+  confirmDelete(msg, () => {
+    DB.updateUser({ username, active })
+      .then(() => { Modal.close(); refreshUsers(); toast(active ? 'Account re-enabled' : 'Account disabled'); })
+      .catch(e => toast(e.message || 'Could not change the account'));
+  });
+}
+
+/* ============================================================
    SETTINGS
    ============================================================ */
 function renderSettings() {
@@ -1414,6 +1645,7 @@ function renderSettings() {
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const admin = DB.isAdmin();
   const docs = db.assets.filter(a => safeUrl(a.manualUrl) || safeUrl(a.drawingUrl)).length;
+  const q = Insights.dataQuality();
 
   return `
   <h1 class="page">Settings</h1>
@@ -1453,7 +1685,9 @@ function renderSettings() {
     <h3 class="sec">Data in the database</h3>
     ${renderTable([{ label: 'Collection', key: 'k' }, { label: 'Records', num: true, key: 'v' }],
       Object.entries(counts).map(([k, v]) => ({ id: k, k, v })))}
-    <div class="note">${total} record${total===1?'':'s'} total · ${docs} asset${docs===1?'':'s'} with documents linked.</div>
+    <div class="note">${total} record${total===1?'':'s'} total · ${docs} asset${docs===1?'':'s'} with documents ·
+      ${q.pct}% of closed work orders documented well enough for Smart Assist.
+      <a href="#/smart">See Smart Assist</a>.</div>
   </div>
   ${admin ? `<div class="card">
     <h3 class="sec">Backup and sample data</h3>
@@ -1504,6 +1738,7 @@ function seedSample() {
   if (!DB.isAdmin()) { toast('Only an admin can load sample data'); return; }
   const d = today();
   const plus = n => DB.addDays(d, n);
+  const back = n => DB.addDays(d, -n);
   const me = DB.getWho();
 
   DB.bulkUpsert('assets', [
@@ -1518,40 +1753,57 @@ function seedSample() {
     { id: 'PM-003', assetId: '3526', description: 'Inspect and clean sonotrodes/anvils; check ultrasonic weld quality', frequency: 'weekly', nextDue: plus(2), tech: me },
     { id: 'PM-004', assetId: '3526', description: 'Clean/replace main air supply filters and moisture separators', frequency: 'monthly', nextDue: plus(9), tech: me },
     { id: 'PM-005', assetId: '3526', description: 'Lubricate sliding and rotating components', frequency: 'monthly', nextDue: plus(14) },
-    { id: 'PM-006', assetId: '3526', description: 'Clean photo-eyes/sensors and air blow-off nozzles', frequency: 'monthly', nextDue: plus(22) },
     { id: 'PM-007', assetId: '3526', description: 'Inspect ultrasonic generators and tightening controller', frequency: 'quarterly', nextDue: plus(86) },
-    { id: 'PM-008', assetId: '3526', description: 'Inspect guarding, safety interlocks, E-stops and light curtains', frequency: 'quarterly', nextDue: plus(86) },
     { id: 'PM-009', assetId: '3526', description: 'Back up PLC/servo programs; review hour-meter counters', frequency: 'annually', nextDue: plus(360) }
   ]);
   DB.bulkUpsert('parts', [
     { id: 'CT_12672', description: 'Sonotrode', assetId: '3526', mfrPn: '6821000797', vendor: '3CON', location: 'SP1-I2-B5' },
-    { id: 'CT_12673', description: 'Sonotrode', assetId: '3526', mfrPn: '6841000758', vendor: '3CON', location: 'SP1-I2-B4' },
     { id: 'CT_1710', description: 'Ultrasonic generator', assetId: '3526', mfrPn: '88194', vendor: 'HERRMANN', location: 'SP1-E3-B22' },
-    { id: 'CT_13166', description: 'Power Focus 6000 tightening controller', assetId: '3526', mfrPn: '8436095010', vendor: 'ATLAS COPCO', location: 'SP1-H2-B3' },
-    { id: 'CT_10591', description: 'SIMATIC ET 200SP analog input module', assetId: '3526', mfrPn: '6ES7134-6GF00-0AA1', vendor: 'SIEMENS', location: 'SP1-E3-A11' },
     { id: 'CT_1707', description: 'SIMATIC ET 200SP digital input module', assetId: '3526', mfrPn: '6ES7131-6BF01-0BA0', vendor: 'SIEMENS', location: 'SP1-E3-A5' },
-    { id: 'CT_1708', description: 'SIMATIC ET 200SP digital output module', assetId: '3526', mfrPn: '6ES7132-6BH01-0BA0', vendor: 'SIEMENS', location: 'SP1-E3-A4' },
-    { id: 'CT_1711', description: 'SIMATIC ET 200SP BaseUnit BU15-P16+A10+2D', assetId: '3526', mfrPn: '6ES7193-6BP20-0DA0', vendor: 'SIEMENS', location: 'SP1-E3-A3' },
     { id: 'P-1001', description: 'Compressor oil filter', assetId: '3527', mfrPn: 'GRA-4471', vendor: 'Grainger', location: 'SP1-A1-B2', qty: '12', min: '5', max: '20', cost: '38.50' }
   ]);
+  /* Deliberately includes a repeat-failure pattern and real notes, so
+     Smart Assist has something to find the moment you open it. */
   DB.bulkUpsert('wos', [
-    { id: 'WO-1001', assetId: '3527', description: 'Oil leak at compressor head', type: 'Repair', priority: 'High',
-      requestedBy: 'Chris Myers', assignedTo: me, dateRequested: DB.addDays(d,-7),
-      dateStarted: DB.addDays(d,-6), dateDue: DB.addDays(d,1), hours: '4.0', cost: '450',
-      status: 'In Progress', cause: 'To be determined' },
-    { id: 'WO-1002', assetId: '3526', description: 'Replace worn sonotrode on station 2', type: 'Repair', priority: 'Medium',
-      requestedBy: me, assignedTo: me, dateRequested: DB.addDays(d,-21),
-      dateStarted: DB.addDays(d,-20), dateCompleted: DB.addDays(d,-20), hours: '2.5', cost: '1250',
-      status: 'Completed', cause: 'Wear / end of life', partsUsed: 'CT_12672' },
+    { id: 'WO-1002', assetId: '3526', description: 'Replace worn sonotrode on station 2', type: 'Repair',
+      priority: 'Medium', requestedBy: me, assignedTo: me,
+      dateRequested: back(22), dateStarted: back(21), dateCompleted: back(21),
+      hours: '2.5', cost: '1250', status: 'Completed', cause: 'Wear / end of life', partsUsed: 'CT_12672',
+      notes: 'Sonotrode face was pitted and cratered. Swapped in CT_12672, retorqued stack to 45 Nm, ran 20 test welds — all within spec.' },
+    { id: 'WO-0887', assetId: '3526', description: 'Weld quality drift on station 1', type: 'Troubleshoot',
+      priority: 'High', requestedBy: 'Quality', assignedTo: me,
+      dateRequested: back(122), dateCompleted: back(120),
+      hours: '6', cost: '3400', status: 'Completed', cause: 'Electrical fault',
+      notes: 'Generator output drifting under load, weld strength falling off after ~40 cycles. Replaced ultrasonic generator CT_1710. Back to spec.' },
+    { id: 'WO-0790', assetId: '3526', description: 'Bad welds coming off station 2', type: 'Repair',
+      priority: 'Medium', requestedBy: 'Night shift', assignedTo: me,
+      dateRequested: back(205), dateCompleted: back(200),
+      hours: '1.5', status: 'Completed', cause: 'Contamination',
+      notes: 'Anvil had material buildup from previous run. Cleaned anvil and sonotrode faces, reset trigger pressure to 3.2 bar.' },
+    { id: 'WO-1001', assetId: '3527', description: 'Oil leak at compressor head', type: 'Repair',
+      priority: 'High', requestedBy: 'Chris Myers', assignedTo: me,
+      dateRequested: back(16), dateStarted: back(15), dateCompleted: back(15),
+      hours: '4', cost: '450', status: 'Completed', cause: 'Seal failure',
+      notes: 'Head gasket seeping again. Replaced gasket, torqued to 32 Nm in sequence.' },
+    { id: 'WO-0940', assetId: '3527', description: 'Oil leaking from compressor', type: 'Repair',
+      priority: 'High', requestedBy: 'Chris Myers', assignedTo: me,
+      dateRequested: back(96), dateCompleted: back(95),
+      hours: '4.5', cost: '480', status: 'Completed', cause: 'Seal failure',
+      notes: 'Same head gasket leaking. Replaced. Second time this year — worth checking head flatness.' },
+    { id: 'WO-0810', assetId: '3527', description: 'Compressor oil on floor', type: 'Repair',
+      priority: 'High', requestedBy: 'Night shift', assignedTo: me,
+      dateRequested: back(182), dateCompleted: back(180),
+      hours: '5', cost: '520', status: 'Completed', cause: 'Seal failure',
+      notes: 'Head gasket, third time. Replaced again. Strongly suspect the head is warped — recommend pulling and surfacing it.' },
     { id: 'WO-1003', assetId: '3526', description: 'Weld quality drift — investigate generator output', type: 'Troubleshoot',
-      priority: 'High', requestedBy: 'Quality', dateRequested: DB.addDays(d,-2), dateDue: DB.addDays(d,3),
+      priority: 'High', requestedBy: 'Quality', dateRequested: back(2), dateDue: plus(3),
       status: 'Open', cause: 'To be determined' },
-    { id: 'WO-1004', assetId: '3526', description: 'Air leak at main regulator', type: 'Repair', priority: 'Low',
-      requestedBy: 'Night shift', dateRequested: DB.addDays(d,-1), dateDue: DB.addDays(d,6),
+    { id: 'WO-1004', assetId: '3526', description: 'Air leak at main regulator', type: 'Repair',
+      priority: 'Low', requestedBy: 'Night shift', dateRequested: back(1), dateDue: plus(6),
       status: 'On Hold', cause: 'To be determined' }
   ]);
   route();
-  toast('Sample data loaded — 2 assets, 7 PMs, 9 parts, 4 work orders');
+  toast('Sample data loaded — including a recurring failure for Smart Assist to find');
 }
 
 /* ============================================================

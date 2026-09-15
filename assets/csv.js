@@ -1,6 +1,5 @@
 /* ============================================================
    csv.js — CSV parse / build + column mapping for imports
-   Handles quoted fields, embedded commas, CRLF, BOM.
    ============================================================ */
 const CSV = (() => {
   function parse(text){
@@ -84,7 +83,7 @@ const CSV = (() => {
       cause:['causeoffailure','cause','rootcause','failurecause'],
       partsUsed:['partsneeded','partsused','parts'],
       docUrl:['document','documenturl','documentlink','reference','referencelink','attachment','attachmenturl'],
-      status:['status','state'],notes:['notes','technotes','remarks','comments']}};
+      status:['status','state'],notes:['notes','technotes','remarks','comments','workperformed','repairdetails']}};
   function mapHeaders(entity,headers){
     const alias=ALIAS[entity];const map={};
     headers.forEach(h=>{const n=norm(h);
