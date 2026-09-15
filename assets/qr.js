@@ -4,18 +4,16 @@
    blocks outside scripts. Versions 1–10.
    ============================================================ */
 const QR = (() => {
-  const EXP = new Uint8Array(512), LOG = new Uint8Array(256);
-  (function initGF(){ let x=1;
-    for(let i=0;i<255;i++){EXP[i]=x;LOG[x]=i;x<<=1;if(x&0x100)x^=0x11d;}
-    for(let i=255;i<512;i++)EXP[i]=EXP[i-255]; })();
+  const EXP=new Uint8Array(512),LOG=new Uint8Array(256);
+  (function(){let x=1;for(let i=0;i<255;i++){EXP[i]=x;LOG[x]=i;x<<=1;if(x&0x100)x^=0x11d;}
+    for(let i=255;i<512;i++)EXP[i]=EXP[i-255];})();
   const gMul=(a,b)=>(a===0||b===0)?0:EXP[LOG[a]+LOG[b]];
   function genPoly(n){let poly=[1];
     for(let i=0;i<n;i++){const next=new Array(poly.length+1).fill(0);
-      for(let j=0;j<poly.length;j++){next[j]^=poly[j];next[j+1]^=gMul(poly[j],EXP[i]);}
-      poly=next;} return poly;}
+      for(let j=0;j<poly.length;j++){next[j]^=poly[j];next[j+1]^=gMul(poly[j],EXP[i]);}poly=next;}
+    return poly;}
   function ecCodewords(data,ecLen){const gen=genPoly(ecLen);
-    const res=new Array(data.length+ecLen).fill(0);
-    data.forEach((b,i)=>{res[i]=b;});
+    const res=new Array(data.length+ecLen).fill(0);data.forEach((b,i)=>{res[i]=b;});
     for(let i=0;i<data.length;i++){const f=res[i];if(f===0)continue;
       for(let j=0;j<gen.length;j++)res[i+j]^=gMul(gen[j],f);}
     return res.slice(data.length);}
@@ -54,8 +52,7 @@ const QR = (() => {
   function newMatrix(size){const m=[];for(let i=0;i<size;i++)m.push(new Array(size).fill(null));return m;}
   function placeFinder(m,r,c){
     for(let i=-1;i<=7;i++)for(let j=-1;j<=7;j++){
-      const rr=r+i,cc=c+j;
-      if(rr<0||cc<0||rr>=m.length||cc>=m.length)continue;
+      const rr=r+i,cc=c+j;if(rr<0||cc<0||rr>=m.length||cc>=m.length)continue;
       const ring=(i>=0&&i<=6&&(j===0||j===6))||(j>=0&&j<=6&&(i===0||i===6));
       const core=i>=2&&i<=4&&j>=2&&j<=4;
       m[rr][cc]=(ring||core)?1:0;}}
@@ -66,7 +63,7 @@ const QR = (() => {
         m[r+i][c+j]=(Math.max(Math.abs(i),Math.abs(j))===1)?0:1;}}
   function placeTiming(m){const size=m.length;
     for(let i=8;i<size-8;i++){const v=i%2===0?1:0;
-      if(m[6][i]===null)m[6][i]=v; if(m[i][6]===null)m[i][6]=v;}}
+      if(m[6][i]===null)m[6][i]=v;if(m[i][6]===null)m[i][6]=v;}}
   function reserve(m,version){const size=m.length;
     for(let i=0;i<9;i++){if(m[8][i]===null)m[8][i]='R';if(m[i][8]===null)m[i][8]='R';}
     for(let i=0;i<8;i++){if(m[8][size-1-i]===null)m[8][size-1-i]='R';if(m[size-1-i][8]===null)m[size-1-i][8]='R';}
@@ -90,8 +87,7 @@ const QR = (() => {
     return f.map(row=>row.map(v=>v!==null));}
   function applyMask(m,maskId,isFunc){const size=m.length;const out=m.map(r=>r.slice());
     for(let r=0;r<size;r++)for(let c=0;c<size;c++){
-      if(isFunc[r][c])continue;
-      if(MASKS[maskId](r,c))out[r][c]^=1;}
+      if(isFunc[r][c])continue;if(MASKS[maskId](r,c))out[r][c]^=1;}
     return out;}
   function formatBits(maskId){const data=(0b00<<3)|maskId;let rem=data<<10;
     for(let i=14;i>=10;i--)if((rem>>i)&1)rem^=0b10100110111<<(i-10);
@@ -100,8 +96,8 @@ const QR = (() => {
      reserve() marks so none is left holding a data bit. */
   function placeFormat(m,maskId){const size=m.length;const bits=formatBits(maskId);
     for(let i=0;i<15;i++){const bit=(bits>>i)&1;
-      if(i<6)m[i][8]=bit; else if(i<8)m[i+1][8]=bit; else m[size-15+i][8]=bit;
-      if(i<8)m[8][size-1-i]=bit; else if(i===8)m[8][7]=bit; else m[8][14-i]=bit;}
+      if(i<6)m[i][8]=bit;else if(i<8)m[i+1][8]=bit;else m[size-15+i][8]=bit;
+      if(i<8)m[8][size-1-i]=bit;else if(i===8)m[8][7]=bit;else m[8][14-i]=bit;}
     m[size-8][8]=1;}
   function versionBits(version){let rem=version<<12;
     for(let i=17;i>=12;i--)if((rem>>i)&1)rem^=0b1111100100<<(i-12);
@@ -137,15 +133,14 @@ const QR = (() => {
     const base=newMatrix(size);
     placeFinder(base,0,0);placeFinder(base,0,size-7);placeFinder(base,size-7,0);
     placeAlignment(base,version);placeTiming(base);reserve(base,version);
-    /* Reserved cells stay marked through data placement so data bits
-       skip them; overwritten with real format bits after masking. */
+    /* Reserved cells stay marked through data placement so data bits skip
+       them; overwritten with real format bits after masking. */
     const isFunc=functionMask(version);
     placeData(base,cw);
     let best=null,bestScore=Infinity;
     for(let mid=0;mid<8;mid++){const cand=applyMask(base,mid,isFunc);
       placeFormat(cand,mid);placeVersion(cand,version);
-      const s=penalty(cand);
-      if(s<bestScore){bestScore=s;best=cand;}}
+      const s=penalty(cand);if(s<bestScore){bestScore=s;best=cand;}}
     return best.map(row=>row.map(v=>v===1));}
   function toSVG(text,opts={}){const m=encode(text);const n=m.length;
     const quiet=opts.quiet??4;const total=n+quiet*2;const px=opts.size||160;

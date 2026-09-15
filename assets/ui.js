@@ -7,19 +7,44 @@ function esc(s){
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 /* Safe inside a single-quoted JS string within a double-quoted HTML
-   attribute: onclick="fn('<here>')". JS-escape then HTML-escape —
-   without the HTML pass a quote in an ID breaks out of the attribute. */
+   attribute: onclick="fn('<here>')". JS-escape then HTML-escape — without
+   the HTML pass a quote in an ID breaks out of the attribute. */
 function jsq(s){
   return esc(String(s??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'"));
+}
+
+/* Only allow links that actually navigate somewhere.
+   A pasted "javascript:..." URL in a document field would otherwise run
+   as soon as someone clicked it, so anything that is not http(s) or a
+   SharePoint/file style link is rejected outright. */
+function safeUrl(u){
+  const s=String(u||'').trim();
+  if(!s) return '';
+  if(/^[a-z][a-z0-9+.-]*:/i.test(s)){
+    return /^(https?|ftp|mailto|file):/i.test(s) ? s : '';
+  }
+  /* no scheme — treat as https so "sharepoint.com/..." still works */
+  return 'https://'+s;
+}
+
+/* A document link rendered as a button. Returns '' when there is no
+   usable URL, so callers can just drop it in. */
+function docLink(url,label,opts={}){
+  const safe=safeUrl(url);
+  if(!safe) return '';
+  const cls=opts.cls||'btn out sm';
+  const icon=opts.icon||'&#128196;';
+  return `<a class="${cls}" href="${esc(safe)}" target="_blank" rel="noopener noreferrer"
+    onclick="event.stopPropagation()">${icon} ${esc(label||'Open document')} &#8599;</a>`;
 }
 
 let _toastT;
 function toast(msg){
   const e=document.getElementById('toast');
   if(!e)return;
-  e.textContent=msg; e.classList.add('show');
+  e.textContent=msg;e.classList.add('show');
   clearTimeout(_toastT);
-  _toastT=setTimeout(()=>e.classList.remove('show'),3000);
+  _toastT=setTimeout(()=>e.classList.remove('show'),3400);
 }
 
 const Modal={
@@ -44,7 +69,8 @@ const F={
     return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
       <input id="f_${name}" name="${name}" type="${opts.type||'text'}" value="${esc(val??'')}"
         ${opts.readonly?'readonly':''} ${opts.placeholder?`placeholder="${esc(opts.placeholder)}"`:''}
-        ${opts.autocomplete?`autocomplete="${opts.autocomplete}"`:''}/>`;},
+        ${opts.autocomplete?`autocomplete="${opts.autocomplete}"`:''}/>
+      ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
   num(name,label,val,opts={}){
     return `<label for="f_${name}">${esc(label)}</label>
       <input id="f_${name}" name="${name}" type="number" step="${opts.step||'any'}" value="${esc(val??'')}"/>`;},
@@ -53,11 +79,28 @@ const F={
       <input id="f_${name}" name="${name}" type="date" value="${esc(val??'')}"/>`;},
   select(name,label,val,options,opts={}){
     const o=options.map(x=>{
-      const v=typeof x==='string'?x:x.v, t=typeof x==='string'?x:x.t;
+      const v=typeof x==='string'?x:x.v,t=typeof x==='string'?x:x.t;
       return `<option value="${esc(v)}" ${String(val??'')===String(v)?'selected':''}>${esc(t)}</option>`;
     }).join('');
     return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
-      <select id="f_${name}" name="${name}">${o}</select>`;},
+      <select id="f_${name}" name="${name}">${o}</select>
+      ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
+  /* Person picker backed by real accounts, with a free-text fallback so
+     an outside contractor can still be named. */
+  person(name,label,val,opts={}){
+    const names=DB.peopleNames(val);
+    const options=[{v:'',t:opts.emptyLabel||'— nobody assigned —'}]
+      .concat(names.map(n=>({v:n,t:n})));
+    if(!names.length){
+      return `<label for="f_${name}">${esc(label)}</label>
+        <input id="f_${name}" name="${name}" value="${esc(val??'')}" placeholder="Type a name"/>
+        <div class="hint">No accounts loaded — type a name instead.</div>`;
+    }
+    return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
+      <select id="f_${name}" name="${name}">
+        ${options.map(x=>`<option value="${esc(x.v)}" ${String(val??'')===String(x.v)?'selected':''}>${esc(x.t)}</option>`).join('')}
+      </select>
+      ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
   area(name,label,val,rows=3){
     return `<label for="f_${name}">${esc(label)}</label>
       <textarea id="f_${name}" name="${name}" rows="${rows}">${esc(val??'')}</textarea>`;},
@@ -110,7 +153,6 @@ function appBaseUrl(){
   return o+location.pathname.replace(/index\.html$/,'');
 }
 function assetUrl(id){return appBaseUrl()+'#/asset/'+encodeURIComponent(id);}
-
 function qrEngineReady(){
   return typeof QR!=='undefined'&&QR&&typeof QR.toSVG==='function';
 }
@@ -120,8 +162,8 @@ function qrSvg(text,px){
     return `<div class="qrfail"><b>QR engine not loaded</b><span>assets/qr.js is missing or failed to load</span></div>`;
   if(!text)
     return `<div class="qrfail"><b>No address to encode</b><span>open the app over http, not as a file</span></div>`;
-  try{ return QR.toSVG(text,{size:px||150}); }
-  catch(e){ return `<div class="qrfail"><b>Could not build code</b><span>${esc(e&&e.message?e.message:'unknown error')}</span></div>`; }
+  try{return QR.toSVG(text,{size:px||150});}
+  catch(e){return `<div class="qrfail"><b>Could not build code</b><span>${esc(e&&e.message?e.message:'unknown error')}</span></div>`;}
 }
 function qrSelfTest(){
   if(!qrEngineReady())return{ok:false,msg:'assets/qr.js not loaded'};

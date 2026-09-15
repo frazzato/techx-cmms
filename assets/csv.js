@@ -8,12 +8,12 @@ const CSV = (() => {
     const rows=[];let row=[],field='',q=false;
     for(let i=0;i<text.length;i++){
       const c=text[i],n=text[i+1];
-      if(q){ if(c==='"'&&n==='"'){field+='"';i++;} else if(c==='"')q=false; else field+=c; }
-      else { if(c==='"')q=true;
+      if(q){if(c==='"'&&n==='"'){field+='"';i++;}else if(c==='"')q=false;else field+=c;}
+      else{if(c==='"')q=true;
         else if(c===','){row.push(field);field='';}
         else if(c==='\n'){row.push(field);rows.push(row);row=[];field='';}
         else if(c==='\r'){}
-        else field+=c; }}
+        else field+=c;}}
     if(field.length||row.length){row.push(field);rows.push(row);}
     return rows.filter(r=>r.some(c=>String(c).trim()!==''));}
   function toObjects(text){
@@ -41,14 +41,21 @@ const CSV = (() => {
       serial:['serialnumber','serialno','serial','serialnum','sn'],
       project:['projectnumber','project','projectno','projno','proj','projectnum'],
       location:['location','area','line','cell','plant'],
-      status:['status','state'], notes:['notes','comment','comments','remarks']},
+      status:['status','state'],
+      owner:['owner','responsible','assetowner','responsibleperson','assignedto'],
+      manualUrl:['manual','manualurl','manuallink','documentlink','documenturl','doclink','docurl',
+        'sharepoint','sharepointlink','manualsharepoint','operatingmanual','servicemanual'],
+      drawingUrl:['drawing','drawingurl','drawinglink','electricaldrawing','schematic','schematicurl','cad','cadlink'],
+      imageUrl:['imageurl','image','picture','photo','assetimage'],
+      notes:['notes','comment','comments','remarks']},
     pms:{id:['pmnumber','pmid','pmno','id','pm'],
       assetId:['assetid','asset','assetnumber','equipmentid'],
       description:['pmdescription','description','task','work','details'],
       frequency:['frequency','freq','interval','cadence'],
       nextDue:['nextdue','nextduedate','duedate','due','nextdate'],
       lastDone:['lastcompleted','lastdone','lastcompleteddate','lastdate'],
-      tech:['assignedtechnician','technician','assignedto','owner','tech'],
+      tech:['assignedtechnician','technician','assignedto','owner','tech','responsible'],
+      procedureUrl:['procedure','procedureurl','procedurelink','instruction','instructionurl','worksheet','checklist','checklisturl'],
       completed:['completed','done','iscompleted']},
     parts:{id:['partnumber','partno','partid','id','part'],
       description:['description','partdescription','name'],
@@ -65,9 +72,9 @@ const CSV = (() => {
     wos:{id:['workordernumber','wonumber','workorder','wono','id','wo'],
       assetId:['assetid','asset','assetnumber','equipmentid'],
       description:['description','problem','issue','workdescription','task'],
-      type:['worktype','type','category'], priority:['priority','urgency'],
+      type:['worktype','type','category'],priority:['priority','urgency'],
       requestedBy:['requestedby','requester','reportedby'],
-      assignedTo:['assignedto','technician','assignee','tech'],
+      assignedTo:['assignedto','technician','assignee','tech','responsible'],
       dateRequested:['requestdate','daterequested','datereported','created'],
       dateDue:['scheduleddate','duedate','datedue','scheduled','targetdate'],
       dateStarted:['datestarted','startdate','started'],
@@ -76,7 +83,8 @@ const CSV = (() => {
       cost:['cost','totalcost','repaircost'],
       cause:['causeoffailure','cause','rootcause','failurecause'],
       partsUsed:['partsneeded','partsused','parts'],
-      status:['status','state'], notes:['notes','technotes','remarks','comments']}};
+      docUrl:['document','documenturl','documentlink','reference','referencelink','attachment','attachmenturl'],
+      status:['status','state'],notes:['notes','technotes','remarks','comments']}};
   function mapHeaders(entity,headers){
     const alias=ALIAS[entity];const map={};
     headers.forEach(h=>{const n=norm(h);

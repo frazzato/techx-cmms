@@ -10,9 +10,12 @@ const CAUSES = ['To be determined', 'Wear / end of life', 'Seal failure', 'Loose
   'Contamination', 'Operator damage', 'Electrical fault', 'Software / program', 'Unknown'];
 const ROLE_LABEL = { admin: 'Admin', maintenance: 'Maintenance' };
 
+const LINK_HINT = 'Paste a SharePoint or web address. Opens in a new tab — the file stays where it lives.';
+
 let SEARCH = '';
 let WO_VIEW = 'list';
 let WO_FILTER = 'all';
+let PM_FILTER = 'all';
 let CAL = { y: new Date().getFullYear(), m: new Date().getMonth(), pms: true };
 let USERS = [];
 
@@ -24,8 +27,6 @@ const ROUTES = {
   pm: renderPM, parts: renderParts, wo: renderWO, qr: renderQR,
   import: renderImport, users: renderUsers, settings: renderSettings, login: renderLogin
 };
-
-/* Screens only an admin may open. */
 const ADMIN_ROUTES = ['import', 'users'];
 
 function route() {
@@ -40,7 +41,6 @@ function route() {
     updateChrome();
     return;
   }
-
   if (ADMIN_ROUTES.includes(name) && !DB.isAdmin()) {
     document.getElementById('view').innerHTML = renderNoAccess(name);
     updateChrome();
@@ -75,19 +75,14 @@ function renderNoAccess(name) {
     <div class="placeholder">
       <div style="font-size:30px">&#128274;</div>
       <b style="display:block;margin:10px 0 6px;color:var(--ink);font-size:16px">Admins only</b>
-      <span>You are signed in as <b>${esc(DB.getWho())}</b> (Maintenance).
-      Ask an admin if you need this.</span>
+      <span>You are signed in as <b>${esc(DB.getWho())}</b> (Maintenance). Ask an admin if you need this.</span>
       <div class="actions" style="justify-content:center"><a class="btn filled" href="#/home">Back to home</a></div>
     </div>`;
 }
 
-/* Hide admin-only nav items and update the connection badge. */
 function updateChrome() {
   const admin = DB.isAdmin();
-  document.querySelectorAll('.rail .adminonly').forEach(el => {
-    el.style.display = admin ? '' : 'none';
-  });
-
+  document.querySelectorAll('.rail .adminonly').forEach(el => { el.style.display = admin ? '' : 'none'; });
   const el = document.getElementById('connBadge');
   if (!el) return;
   const s = DB.status();
@@ -121,6 +116,7 @@ function renderLogin() {
       <div id="loginMsg"></div>
       <div class="actions">
         <button class="btn filled" onclick="doLogin()">Sign in</button>
+        <button class="btn out" onclick="runDiagnostics()">Check server</button>
       </div>
       <div class="note">Every change you make is recorded under your name.
       If you have forgotten your password, an admin can reset it for you.</div>
@@ -138,20 +134,67 @@ function doLogin() {
   }
   if (msg) msg.innerHTML = '<div class="note">Signing in…</div>';
 
-  DB.login(u.trim(), p).then(user => {
-    return DB.connect().then(r => {
+  DB.login(u.trim(), p).then(user =>
+    DB.connect().then(r => {
       if (r.mode === 'cloud') DB.startPolling(15);
       location.hash = '#/home';
       route();
       toast('Signed in as ' + user.name);
-      if (user.mustChange) {
-        setTimeout(() => {
-          openChangePassword(true);
-        }, 400);
-      }
-    });
+      if (user.mustChange) setTimeout(() => openChangePassword(true), 400);
+    })
+  ).catch(e => {
+    if (!msg) return;
+    if (e.serverDown || e.offline) {
+      msg.innerHTML = `<div class="note bad"><b>${esc(e.message)}</b><br><br>
+        Click <b>Check server</b> below to see exactly what is missing.</div>`;
+    } else {
+      msg.innerHTML = `<div class="note bad">${esc(e.message || 'Could not sign in')}</div>`;
+    }
+  });
+}
+
+function runDiagnostics() {
+  const msg = document.getElementById('loginMsg');
+  if (msg) msg.innerHTML = '<div class="note">Checking the server…</div>';
+  DB.diagnose().then(d => {
+    if (!msg) return;
+    const yes = '<span style="color:var(--ok)">&#10003;</span>';
+    const no = '<span style="color:var(--bad)">&#10007;</span>';
+    const row = (ok, label) => `<div>${ok ? yes : no} ${label}</div>`;
+    let advice = '';
+    if (!d.hasDatabaseUrl) {
+      advice = `<b>DATABASE_URL is not set.</b> In Vercel → Settings → Environment Variables,
+        add a variable named exactly <span class="mono">DATABASE_URL</span>, then <b>redeploy</b>.`;
+    } else if (d.driverLoads === false) {
+      advice = `<b>The database driver is missing.</b> Check the ROOT <span class="mono">package.json</span>
+        lists <span class="mono">@neondatabase/serverless</span>, and that there is
+        <b>no package.json inside api/</b>. Then redeploy.`;
+    } else if (!d.databaseReachable) {
+      advice = `<b>The database refused the connection.</b> The connection string may be wrong or the
+        database paused. Copy it again from Vercel → Storage.`;
+    } else if (!d.hasAdminPassword && d.userCount === 0) {
+      advice = `<b>No accounts exist yet.</b> Add <span class="mono">ADMIN_USERNAME</span>,
+        <span class="mono">ADMIN_PASSWORD</span> and <span class="mono">ADMIN_NAME</span>, then <b>redeploy</b>.`;
+    } else if (d.userCount === 0) {
+      advice = `<b>Configured, but no account was created.</b> Redeploy once more so the settings take effect.`;
+    } else if (d.ok) {
+      advice = `<b>Everything is working.</b> ${d.userCount} account${d.userCount === 1 ? '' : 's'} exist.`;
+    }
+    msg.innerHTML = `<div class="note ${d.ok ? '' : 'bad'}">
+      ${row(d.hasDatabaseUrl, 'DATABASE_URL is set')}
+      ${row(d.driverLoads, 'Database driver loads')}
+      ${row(d.databaseReachable, 'Database reachable')}
+      ${row(d.tablesReady, 'Tables ready')}
+      ${row(d.hasAdminUsername, 'ADMIN_USERNAME is set')}
+      ${row(d.hasAdminPassword, 'ADMIN_PASSWORD is set')}
+      ${d.userCount !== null && d.userCount !== undefined ? row(d.userCount > 0, d.userCount + ' account(s) exist') : ''}
+      ${d.error ? `<div style="margin-top:8px"><b>Error:</b> ${esc(d.error)}</div>` : ''}
+      ${advice ? `<div style="margin-top:10px;line-height:1.7">${advice}</div>` : ''}
+    </div>`;
   }).catch(e => {
-    if (msg) msg.innerHTML = `<div class="note bad">${esc(e.message || 'Could not sign in')}</div>`;
+    if (msg) msg.innerHTML = `<div class="note bad"><b>Could not reach the API at all.</b><br>
+      ${esc(e.message)}<br><br>The <span class="mono">api</span> folder is probably missing from the
+      deployment.</div>`;
   });
 }
 
@@ -182,7 +225,6 @@ function doChangePassword() {
   if (!d.current) return show('Enter your current password.');
   if ((d.next || '').length < 6) return show('New password must be at least 6 characters.');
   if (d.next !== d.confirm) return show('The two new passwords do not match.');
-
   DB.changePassword(d.current, d.next)
     .then(() => { Modal.close(); toast('Password changed'); })
     .catch(e => show(e.message || 'Could not change password'));
@@ -192,33 +234,37 @@ function doChangePassword() {
    USERS (admin)
    ============================================================ */
 function renderUsers() {
-  /* Loaded asynchronously; refreshUsers() re-renders when it lands. */
   if (!USERS.length) refreshUsers();
   const meU = DB.status().username;
+  const wos = DB.all('wos');
+  const pms = DB.all('pms');
+
+  /* Workload per person, so an admin can see who is actually carrying work. */
+  const load = name => ({
+    open: wos.filter(w => DB.isActive(w) && (w.assignedTo || '') === name).length,
+    pms: pms.filter(p => (p.tech || '') === name).length
+  });
 
   return `
   <h1 class="page">Users</h1>
   <p class="sub">${USERS.length ? USERS.length + ' account' + (USERS.length === 1 ? '' : 's') : 'Loading…'}</p>
-
   <div class="chipset">
     <button class="btn filled" onclick="openAddUser()">&#43; Add person</button>
     <button class="btn out" onclick="refreshUsers()">Refresh</button>
   </div>
-
   <div class="card" style="padding:6px 20px 20px">
-    <h3 class="sec" style="margin-top:16px">Accounts</h3>
+    <h3 class="sec" style="margin-top:16px">Accounts and workload</h3>
     ${renderTable([
       { label: 'Name', render: r => `<b>${esc(r.full_name)}</b>${r.username === meU ? ' <span class="chip c-open">you</span>' : ''}` },
-      { label: 'Username', render: r => `<span class="mono">${esc(r.username)}</span>` },
+      { label: 'Username', hideSm: true, render: r => `<span class="mono">${esc(r.username)}</span>` },
       { label: 'Role', render: r => `<span class="chip ${r.role === 'admin' ? 'c-pur' : 'c-open'}">${esc(ROLE_LABEL[r.role] || r.role)}</span>` },
-      { label: 'Status', render: r => r.active
-          ? '<span class="chip c-done">Active</span>'
-          : '<span class="chip c-hold">Disabled</span>' },
+      { label: 'Open WOs', num: true, render: r => { const n = load(r.full_name).open; return n ? `<b>${n}</b>` : '0'; } },
+      { label: 'PMs owned', num: true, render: r => load(r.full_name).pms },
+      { label: 'Status', render: r => r.active ? '<span class="chip c-done">Active</span>' : '<span class="chip c-hold">Disabled</span>' },
       { label: 'Last signed in', hideSm: true, render: r => r.last_login ? fmtDateTime(r.last_login) : '<span style="color:var(--muted)">never</span>' },
       { label: '', render: r => `<button class="btn out sm" onclick="event.stopPropagation();openEditUser('${jsq(r.username)}')">Manage</button>` }
     ], USERS, { empty: 'No accounts loaded yet.' })}
   </div>
-
   <div class="card">
     <h3 class="sec">What each role can do</h3>
     <div class="tablewrap"><table>
@@ -228,21 +274,21 @@ function renderUsers() {
         <tr><td>Create and edit work orders</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Complete work orders and PMs</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Add and edit assets, PMs, parts</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Count spare parts</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Assign work to anyone</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td><b>Delete</b> anything</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
         <tr><td><b>Import CSV</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
         <tr><td><b>Manage users</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
-        <tr><td><b>Change site settings</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
       </tbody>
     </table></div>
-    <div class="note">Deleting is admin-only on purpose: it is the one action that can quietly
-    destroy a machine's history. Everything a technician needs day to day is available to both roles.</div>
+    <div class="note">Disabling an account keeps its history. Anything already assigned to that
+    person stays assigned, so a work order never loses its owner just because someone left.</div>
   </div>`;
 }
 
 function refreshUsers() {
   DB.listUsers().then(r => {
     USERS = r.users || [];
+    DB.fetchPeople().catch(() => {});
     if ((location.hash || '').startsWith('#/users')) route();
   }).catch(e => toast(e.message || 'Could not load users'));
 }
@@ -257,8 +303,8 @@ function openAddUser() {
         { v: 'admin', t: 'Admin — everything, including users' }])}
       ${F.text('password', 'Temporary password', '', { required: true, type: 'text', autocomplete: 'off' })}
       <div id="userMsg"></div>
-      <div class="note">Give them the temporary password in person. They will be asked to
-      choose their own the first time they sign in.</div>`,
+      <div class="note">The full name is what appears in assignment dropdowns, so use the name
+      people actually go by on the floor.</div>`,
     footer: `<button class="btn filled" onclick="doAddUser()">Create account</button>
       <button class="btn out" onclick="Modal.close()">Cancel</button>`
   });
@@ -269,11 +315,9 @@ function doAddUser() {
   const msg = document.getElementById('userMsg');
   const show = t => { if (msg) msg.innerHTML = `<div class="note bad">${esc(t)}</div>`; };
   if (!d.name) return show('Enter their full name.');
-  if (!/^[a-z0-9._-]{3,32}$/.test((d.username || '').toLowerCase())) {
+  if (!/^[a-z0-9._-]{3,32}$/.test((d.username || '').toLowerCase()))
     return show('Username must be 3–32 characters: letters, numbers, dot, dash or underscore.');
-  }
   if ((d.password || '').length < 6) return show('Temporary password must be at least 6 characters.');
-
   DB.addUser({ name: d.name, username: d.username.toLowerCase(), role: d.role, password: d.password })
     .then(() => { Modal.close(); refreshUsers(); toast(d.name + ' can now sign in'); })
     .catch(e => show(e.message || 'Could not create the account'));
@@ -283,6 +327,7 @@ function openEditUser(username) {
   const u = USERS.find(x => x.username === username);
   if (!u) return;
   const isMe = DB.status().username === username;
+  const openWos = DB.all('wos').filter(w => DB.isActive(w) && (w.assignedTo || '') === u.full_name);
 
   Modal.open({
     title: 'Manage ' + u.full_name,
@@ -292,11 +337,13 @@ function openEditUser(username) {
         { v: 'maintenance', t: 'Maintenance — everyday work' },
         { v: 'admin', t: 'Admin — everything, including users' }])}
       ${isMe ? '<div class="note">This is your own account. You cannot lock yourself out.</div>' : ''}
+      ${openWos.length ? `<div class="note"><b>${openWos.length} open work order${openWos.length === 1 ? '' : 's'}</b>
+        assigned to this person. Disabling the account does not unassign them — reassign first if
+        someone else needs to pick the work up.</div>` : ''}
       <div id="userMsg"></div>
       <h3 class="sec" style="margin-top:22px">Reset password</h3>
       ${F.text('password', 'New temporary password', '', { type: 'text', autocomplete: 'off', placeholder: 'leave blank to keep current' })}
-      <div class="note">Resetting signs them out everywhere and asks them to pick a new
-      password next time they sign in.</div>`,
+      <div class="note">Resetting signs them out everywhere and asks them to pick a new password.</div>`,
     footer: `<button class="btn filled" onclick="doUpdateUser('${jsq(username)}')">Save changes</button>
       <button class="btn out" onclick="Modal.close()">Cancel</button>
       ${!isMe ? (u.active
@@ -322,7 +369,7 @@ function doUpdateUser(username) {
 function setUserActive(username, active) {
   const u = USERS.find(x => x.username === username);
   const msg = active ? `Re-enable ${u ? u.full_name : username}?`
-    : `Disable ${u ? u.full_name : username}?\n\nThey will be signed out immediately and cannot sign back in. Their work history stays.`;
+    : `Disable ${u ? u.full_name : username}?\n\nThey will be signed out immediately and cannot sign back in. Their work history and assignments stay.`;
   confirmDelete(msg, () => {
     DB.updateUser({ username, active })
       .then(() => { Modal.close(); refreshUsers(); toast(active ? 'Account re-enabled' : 'Account disabled'); })
@@ -339,10 +386,12 @@ function renderHome() {
   const progWos = wos.filter(w => w.status === 'In Progress');
   const duePms = pms.filter(p => { const d = DB.daysUntil(p.nextDue); return d !== null && d <= 7; });
   const recent = (DB.raw().meta.recentAssets || []).map(id => DB.get('assets', id)).filter(Boolean);
-  const mine = wos.filter(w => DB.isActive(w) && (w.assignedTo || '') === DB.getWho());
+  const meName = DB.getWho();
+  const myWos = wos.filter(w => DB.isActive(w) && (w.assignedTo || '') === meName);
+  const myPms = pms.filter(p => (p.tech || '') === meName && (DB.daysUntil(p.nextDue) ?? 99) <= 14);
 
   if (!assets.length && !wos.length) {
-    return `<h1 class="page">Welcome, ${esc(DB.getWho())}</h1>
+    return `<h1 class="page">Welcome, ${esc(meName)}</h1>
       <p class="sub">The database is empty.</p>
       <div class="placeholder">
         <div style="font-size:34px">&#128736;</div>
@@ -358,19 +407,19 @@ function renderHome() {
 
   return `
   <h1 class="page">Home</h1>
-  <p class="sub">${esc(DB.raw().meta.site || 'Maintenance')} · signed in as <b>${esc(DB.getWho())}</b> (${esc(ROLE_LABEL[DB.role()] || DB.role())})</p>
+  <p class="sub">${esc(DB.raw().meta.site || 'Maintenance')} · signed in as <b>${esc(meName)}</b> (${esc(ROLE_LABEL[DB.role()] || DB.role())})</p>
 
   <div class="hub">
     <a class="tile" href="#/assets">
       <div class="ic">&#128451;</div><h2>Find an Asset</h2>
-      <p>Search the plant by name or asset number, or scan the QR tag on the machine.</p>
-      <ul><li>Asset name / serial number</li><li>Recent repairs and work orders</li><li>Machine BOM and parts info</li></ul>
+      <p>Search the plant, scan the QR tag, or open the machine manual.</p>
+      <ul><li>Asset name / serial number</li><li>Manuals and drawings</li><li>Machine BOM and repair history</li></ul>
     </a>
     <a class="tile" href="#/wo">
       <div class="ic">&#129534;</div><h2>Work Orders</h2>
       <p>Create or complete work, in a list or on the calendar.</p>
       <ul><li>${openWos.length} pending · ${progWos.length} in progress</li>
-      <li>PM program, schedule and frequency</li><li>Generate a WO from any PM</li></ul>
+      <li>Assigned to a named person</li><li>Generate a WO from any PM</li></ul>
     </a>
     <div class="tile soon">
       <div class="ic">&#129302;</div><h2>AI Assist</h2>
@@ -389,14 +438,22 @@ function renderHome() {
       <div class="n" style="color:${duePms.length ? 'var(--bad)' : 'inherit'}">${duePms.length}</div><div class="l">PMs due within 7 days</div></div>
   </div>
 
-  ${mine.length ? `<div class="card">
-    <h3 class="sec">Assigned to you</h3>
-    ${renderTable([
+  ${(myWos.length || myPms.length) ? `<div class="card">
+    <h3 class="sec">Your work</h3>
+    ${myWos.length ? renderTable([
       { label: 'WO', render: r => `<b class="mono">${esc(r.id)}</b>` },
       { label: 'Work', render: r => `<b>${esc(r.description || '—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>` },
       { label: 'Priority', render: r => prioChip(r.priority) },
+      { label: 'Due', hideSm: true, render: r => fmtDate(r.dateDue) },
       { label: 'Status', render: r => statusChip(r.status) }
-    ], mine, { onRow: 'editWO' })}
+    ], myWos, { onRow: 'editWO' }) : '<div class="empty">No work orders assigned to you.</div>'}
+    ${myPms.length ? `<h3 class="sec" style="margin-top:22px">Your PMs due soon</h3>
+      ${renderTable([
+        { label: 'PM', render: r => `<b class="mono">${esc(r.id)}</b>` },
+        { label: 'Task', render: r => `<b>${esc(r.description || '—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>` },
+        { label: 'Due', render: r => dueChip(r.nextDue) },
+        { label: '', render: r => `<button class="btn tonal sm" onclick="event.stopPropagation();genWO('${jsq(r.id)}')">Generate WO</button>` }
+      ], myPms, { onRow: 'editPM' })}` : ''}
   </div>` : ''}
 
   ${recent.length ? `<div class="card"><h3 class="sec">Recently viewed assets</h3>
@@ -424,6 +481,7 @@ function renderDashboard() {
     .sort((a, b) => (a.nextDue || '').localeCompare(b.nextDue || ''));
   const lowParts = parts.filter(p => DB.partStatus(p).label === 'Low stock');
   const uncounted = parts.filter(p => DB.num(p.qty) === null);
+  const unassigned = openWos.filter(w => !w.assignedTo);
 
   const stat = (ic, bg, col, n, l, d) => `
     <div class="stat"><div class="ic" style="background:${bg};color:${col}">${ic}</div>
@@ -440,11 +498,19 @@ function renderDashboard() {
     ${stat('&#128230;',lowParts.length?'var(--bad-c)':'var(--ok-c)',lowParts.length?'var(--bad)':'var(--ok)',
       lowParts.length,'Parts at or below min',uncounted.length+' never counted')}
   </div>
+
+  ${unassigned.length ? `<div class="note bad">
+    <b>${unassigned.length} open work order${unassigned.length === 1 ? '' : 's'} with nobody assigned.</b>
+    Work without an owner tends not to get done — open them and pick a technician.
+    <a href="#" onclick="WO_FILTER='unassigned';location.hash='#/wo';return false;">Show them</a>.
+  </div>` : ''}
+
   <div class="grid g2">
     <div class="card"><h3 class="sec">PMs due next</h3>
       ${renderTable([
         { label: 'PM', key: 'id' },
         { label: 'Task', render: r => `<b>${esc(r.description || '—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>` },
+        { label: 'Owner', hideSm: true, render: r => r.tech ? esc(r.tech) : '<span style="color:var(--muted)">Unassigned</span>' },
         { label: 'Due', render: r => dueChip(r.nextDue) },
         { label: '', render: r => `<button class="btn tonal sm" onclick="event.stopPropagation();genWO('${jsq(r.id)}')">Generate WO</button>` }
       ], duePms.slice(0, 6), { empty: 'Nothing due in the next 7 days.', onRow: 'editPM' })}
@@ -454,12 +520,13 @@ function renderDashboard() {
       ${renderTable([
         { label: 'WO', key: 'id' },
         { label: 'Description', render: r => `<b>${esc(r.description || '—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>` },
-        { label: 'Priority', render: r => prioChip(r.priority) },
+        { label: 'Assigned', hideSm: true, render: r => r.assignedTo ? esc(r.assignedTo) : '<span class="chip c-crit">Nobody</span>' },
         { label: 'Status', render: r => statusChip(r.status) }
       ], openWos.slice(0, 6), { empty: 'No open work orders.', onRow: 'editWO' })}
       <div class="actions"><a class="btn out sm" href="#/wo">Open work orders</a></div>
     </div>
   </div>
+
   ${lowParts.length ? `<div class="card"><h3 class="sec">Low stock — reorder</h3>
     ${renderTable([
       { label: 'Part', key: 'id' }, { label: 'Description', key: 'description' },
@@ -467,9 +534,7 @@ function renderDashboard() {
       { label: 'On hand', num: true, render: r => esc(r.qty) },
       { label: 'Min', num: true, render: r => esc(r.min) },
       { label: 'Vendor', key: 'vendor', hideSm: true }
-    ], lowParts, { onRow: 'editPart' })}</div>` : ''}
-  ${uncounted.length ? `<div class="note"><b>${uncounted.length} part${uncounted.length===1?'':'s'} have no quantity on hand recorded.</b>
-    Low-stock alerts stay switched off until those are counted. <a href="#/parts">Open spare parts</a>.</div>` : ''}`;
+    ], lowParts, { onRow: 'editPart' })}</div>` : ''}`;
 }
 
 function dueChip(iso) {
@@ -488,16 +553,22 @@ function statusChip(s) {
   const c = s === 'Completed' ? 'c-done' : s === 'In Progress' ? 'c-prog' : s === 'Open' ? 'c-open' : 'c-hold';
   return `<span class="chip ${c}">${esc(s || 'Open')}</span>`;
 }
+/* Small marker showing a record has a document attached. */
+function docChip(url, label) {
+  return safeUrl(url) ? `<span class="chip c-open" title="${esc(label || 'Document attached')}">&#128196;</span>` : '';
+}
 
 /* ============================================================
    ASSETS
    ============================================================ */
 function renderAssets() {
   const rows = DB.all('assets').filter(a =>
-    matches(a, ['id', 'name', 'manufacturer', 'model', 'serial', 'project', 'location']));
+    matches(a, ['id', 'name', 'manufacturer', 'model', 'serial', 'project', 'location', 'owner']));
+  const withDocs = rows.filter(a => safeUrl(a.manualUrl) || safeUrl(a.drawingUrl)).length;
+
   return `
   <h1 class="page">Assets</h1>
-  <p class="sub">${rows.length} asset${rows.length===1?'':'s'}${SEARCH?` matching “${esc(SEARCH)}”`:' in the register'} — tap a row to open its dashboard</p>
+  <p class="sub">${rows.length} asset${rows.length===1?'':'s'}${SEARCH?` matching “${esc(SEARCH)}”`:' in the register'} · ${withDocs} with documents linked</p>
   <div class="chipset">
     <button class="btn filled" onclick="editAsset()">&#43; New asset</button>
     <a class="btn out" href="#/qr">QR tags</a>
@@ -509,13 +580,17 @@ function renderAssets() {
     ${renderTable([
       { label: 'Asset ID', render: r => `<b class="mono">${esc(r.id)}</b>` },
       { label: 'Equipment name', render: r => `<b>${esc(r.name || '—')}</b>${r.location ? `<br><small style="color:var(--muted)">${esc(r.location)}</small>` : ''}` },
-      { label: 'Manufacturer', key: 'manufacturer', hideSm: true },
+      { label: 'Owner', hideSm: true, render: r => r.owner ? esc(r.owner) : '<span style="color:var(--muted)">—</span>' },
+      { label: 'Docs', render: r => {
+          const bits = [];
+          if (safeUrl(r.manualUrl)) bits.push(docLink(r.manualUrl, 'Manual', { cls: 'btn out sm' }));
+          else if (safeUrl(r.drawingUrl)) bits.push(docLink(r.drawingUrl, 'Drawing', { cls: 'btn out sm' }));
+          return bits.join(' ') || '<span style="color:var(--muted)">—</span>'; } },
       { label: 'Status', render: r => `<span class="chip ${r.status==='Down'?'c-crit':r.status==='Retired'?'c-hold':'c-done'}">${esc(r.status || 'Active')}</span>` },
       { label: 'Open WOs', num: true, render: r => {
           const n = DB.forAsset('wos', r.id).filter(DB.isActive).length;
           return n ? `<b style="color:var(--bad)">${n}</b>` : '0'; } },
       { label: 'PMs', num: true, hideSm: true, render: r => DB.forAsset('pms', r.id).length },
-      { label: 'Parts', num: true, hideSm: true, render: r => DB.forAsset('parts', r.id).length },
       { label: '', hideSm: true, render: r => `<button class="btn out sm" onclick="event.stopPropagation();editAsset('${jsq(r.id)}')">Edit</button>` }
     ], rows, { empty: SEARCH ? 'No assets match that search.' : 'No assets yet.', onRow: 'openAsset' })}
   </div>`;
@@ -532,7 +607,6 @@ function renderAssetDetail(id) {
       <a class="btn filled" href="#/assets">Back to assets</a>`;
   }
   DB.touchAsset(id);
-
   const wos = DB.forAsset('wos', id), pms = DB.forAsset('pms', id), parts = DB.forAsset('parts', id);
   const pending = wos.filter(DB.isOpen);
   const prog = wos.filter(w => w.status === 'In Progress');
@@ -540,6 +614,8 @@ function renderAssetDetail(id) {
   const incoming = pms.filter(p => { const d = DB.daysUntil(p.nextDue); return d !== null && d >= 0 && d <= 30; });
   const recentRepairs = done.sort((x, y) => (y.dateCompleted || '').localeCompare(x.dateCompleted || '')).slice(0, 5);
   const lowParts = parts.filter(p => DB.partStatus(p).label === 'Low stock').length;
+
+  const hasDocs = safeUrl(a.manualUrl) || safeUrl(a.drawingUrl);
 
   return `
   <div class="crumb"><a href="#/home">Home</a> › <a href="#/assets">Assets</a> › ${esc(a.id)}</div>
@@ -550,6 +626,7 @@ function renderAssetDetail(id) {
       <div class="meta">
         Asset <b class="mono">${esc(a.id)}</b>${a.serial ? ` · Serial <b class="mono">${esc(a.serial)}</b>` : ''}<br>
         ${a.manufacturer ? esc(a.manufacturer) : 'Manufacturer not set'}${a.model ? ' · ' + esc(a.model) : ''}${a.location ? ' · ' + esc(a.location) : ''}${a.project ? ' · Project ' + esc(a.project) : ''}
+        ${a.owner ? `<br>Responsible: <b>${esc(a.owner)}</b>` : ''}
       </div>
       ${a.notes ? `<div class="note" style="margin-top:12px">${esc(a.notes)}</div>` : ''}
       <div style="margin-top:12px"><span class="chip ${a.status==='Down'?'c-crit':a.status==='Retired'?'c-hold':'c-done'}" style="font-size:13px;padding:8px 14px">${esc(a.status || 'Active')}</span></div>
@@ -559,6 +636,23 @@ function renderAssetDetail(id) {
       <button class="btn out sm" style="margin-top:8px" onclick="showQR('${jsq(a.id)}')">Tag</button>
     </div>
   </div>
+
+  ${hasDocs ? `<div class="card doccard">
+    <h3 class="sec">Documentation</h3>
+    <div class="actions" style="margin-top:0">
+      ${docLink(a.manualUrl, 'Machine manual', { cls: 'btn filled', icon: '&#128214;' })}
+      ${docLink(a.drawingUrl, 'Drawings / schematics', { cls: 'btn tonal', icon: '&#128208;' })}
+    </div>
+    <div class="note">Documents open from where they are stored. If you are outside the plant
+    network you may be asked to sign in to view them.</div>
+  </div>` : `<div class="card">
+    <h3 class="sec">Documentation</h3>
+    <div class="empty" style="padding:20px">No manual or drawings linked yet.
+      <div class="actions" style="justify-content:center">
+        <button class="btn out sm" onclick="editAsset('${jsq(a.id)}')">Add a link</button>
+      </div>
+    </div>
+  </div>`}
 
   <div class="chipset">
     <button class="btn filled" onclick="newWOFor('${jsq(a.id)}')">&#43; New work order</button>
@@ -585,7 +679,7 @@ function renderAssetDetail(id) {
     <div class="card"><h3 class="sec">Recent repairs — last 5 completed</h3>
       ${renderTable([
         { label: 'WO', render: r => `<b class="mono">${esc(r.id)}</b>` },
-        { label: 'Work done', render: r => `<b>${esc(r.description || '—')}</b><br><small style="color:var(--muted)">${esc(r.cause || 'No cause recorded')}${r.updatedBy ? ' · ' + esc(r.updatedBy) : ''}</small>` },
+        { label: 'Work done', render: r => `<b>${esc(r.description || '—')}</b><br><small style="color:var(--muted)">${esc(r.cause || 'No cause recorded')}${r.assignedTo ? ' · ' + esc(r.assignedTo) : ''}</small>` },
         { label: 'Completed', render: r => fmtDate(r.dateCompleted) },
         { label: 'Hrs', num: true, hideSm: true, render: r => r.hours ?? '—' }
       ], recentRepairs, { empty: 'No completed repairs on this asset yet.', onRow: 'editWO' })}
@@ -594,20 +688,19 @@ function renderAssetDetail(id) {
       ${renderTable([
         { label: 'WO', render: r => `<b class="mono">${esc(r.id)}</b>` },
         { label: 'Description', render: r => `<b>${esc(r.description || '—')}</b>` },
-        { label: 'Priority', render: r => prioChip(r.priority) },
+        { label: 'Assigned', render: r => r.assignedTo ? esc(r.assignedTo) : '<span class="chip c-crit">Nobody</span>' },
         { label: 'Status', render: r => statusChip(r.status) }
       ], wos.filter(DB.isActive), { empty: 'Nothing open on this asset.', onRow: 'editWO' })}
     </div>
   </div>
 
-  <div class="card"><h3 class="sec">PM program — schedule and frequency</h3>
+  <div class="card"><h3 class="sec">PM program — schedule, frequency and owner</h3>
     ${renderTable([
       { label: 'PM', render: r => `<b class="mono">${esc(r.id)}</b>` },
-      { label: 'Task', render: r => `<b>${esc(r.description || '—')}</b>` },
-      { label: 'Frequency', render: r => `<span class="chip c-open">${esc(r.frequency || '—')}</span>` },
+      { label: 'Task', render: r => `<b>${esc(r.description || '—')}</b> ${docChip(r.procedureUrl, 'Procedure attached')}` },
+      { label: 'Frequency', hideSm: true, render: r => `<span class="chip c-open">${esc(r.frequency || '—')}</span>` },
       { label: 'Next due', render: r => dueChip(r.nextDue) },
-      { label: 'Last done', hideSm: true, render: r => fmtDate(r.lastDone) },
-      { label: 'Technician', hideSm: true, render: r => r.tech ? esc(r.tech) : '<span style="color:var(--muted)">Unassigned</span>' },
+      { label: 'Responsible', render: r => r.tech ? esc(r.tech) : '<span style="color:var(--muted)">Unassigned</span>' },
       { label: '', render: r => `<button class="btn tonal sm" onclick="event.stopPropagation();genWO('${jsq(r.id)}')">Generate WO</button>
         <button class="btn out sm" onclick="event.stopPropagation();completePM('${jsq(r.id)}')">Mark done</button>` }
     ], pms.sort((x, y) => (x.nextDue || '9999').localeCompare(y.nextDue || '9999')),
@@ -617,15 +710,12 @@ function renderAssetDetail(id) {
   <div class="card"><h3 class="sec">Machine BOM — components and spare parts${lowParts ? ` · ${lowParts} low` : ''}</h3>
     ${renderTable([
       { label: 'Part number', render: r => `<b class="mono">${esc(r.id)}</b>` },
-      { label: 'Description', key: 'description' },
+      { label: 'Description', render: r => `${esc(r.description || '')} ${docChip(r.docUrl, 'Spec sheet')}` },
       { label: 'Mfr P/N', hideSm: true, render: r => `<span class="mono">${esc(r.mfrPn || '—')}</span>` },
       { label: 'Vendor', key: 'vendor', hideSm: true },
       { label: 'Bin location', render: r => `<span class="mono">${esc(r.location || '—')}</span>` },
       { label: 'On hand', num: true, render: r => r.qty ?? '—' },
-      { label: 'Status', render: r => { const s = DB.partStatus(r); return `<span class="chip ${s.cls}">${s.label}</span>`; } },
-      { label: 'Info', hideSm: true, render: r => {
-          const b = []; if (r.imageUrl) b.push('&#128247;'); if (r.docUrl) b.push('&#128196;');
-          return b.join(' ') || '<span style="color:var(--muted)">—</span>'; } }
+      { label: 'Status', render: r => { const s = DB.partStatus(r); return `<span class="chip ${s.cls}">${s.label}</span>`; } }
     ], parts, { empty: 'No parts linked to this asset yet.', onRow: 'editPart' })}
   </div>`;
 }
@@ -725,8 +815,7 @@ function downloadTag(id) {
    ASSET form
    ============================================================ */
 function editAsset(id) {
-  /* The record can be gone — a stale QR link, or someone else deleted it
-     while this page was open. Say so instead of throwing. */
+  /* The record can be gone — a stale QR link, or someone else deleted it. */
   if (id && !DB.get('assets', id)) { toast('That asset no longer exists'); route(); return; }
   const a = id ? DB.get('assets', id) : {};
   const isNew = !id;
@@ -743,6 +832,19 @@ function editAsset(id) {
         <div>${F.text('location','Location / line',a.location)}</div>
         <div>${F.select('status','Status',a.status||'Active',['Active','Standby','Down','Retired'])}</div>
       </div>
+      ${F.person('owner','Responsible person',a.owner,
+        {emptyLabel:'— nobody assigned —',hint:'Who owns this machine day to day.'})}
+
+      <h3 class="sec" style="margin-top:24px">Documentation</h3>
+      ${F.text('manualUrl','Machine manual link',a.manualUrl,
+        {placeholder:'https://iacgroup.sharepoint.com/...',hint:LINK_HINT})}
+      ${F.text('drawingUrl','Drawings / schematics link',a.drawingUrl,
+        {placeholder:'https://iacgroup.sharepoint.com/...'})}
+      ${(safeUrl(a.manualUrl)||safeUrl(a.drawingUrl)) ? `<div class="actions" style="margin-top:12px">
+        ${docLink(a.manualUrl,'Open manual',{cls:'btn tonal sm',icon:'&#128214;'})}
+        ${docLink(a.drawingUrl,'Open drawings',{cls:'btn tonal sm',icon:'&#128208;'})}
+      </div>` : ''}
+
       ${F.area('notes','Notes',a.notes)}
       ${!isNew && a.updatedBy ? `<div class="note">Last changed by <b>${esc(a.updatedBy)}</b></div>` : ''}`,
     footer: `<button class="btn filled" onclick="saveAsset(${isNew})">Save asset</button>
@@ -756,7 +858,10 @@ function saveAsset(isNew) {
   const d = F.read();
   if (!d.id || !d.name) { toast('Asset ID and equipment name are required'); return; }
   if (isNew && DB.get('assets', d.id)) { toast('That asset ID already exists'); return; }
-  d.updatedBy = DB.getWho();
+  /* Reject links that would not open as a normal web address, rather than
+     saving something that silently does nothing when clicked. */
+  if (d.manualUrl && !safeUrl(d.manualUrl)) { toast('The manual link is not a valid web address'); return; }
+  if (d.drawingUrl && !safeUrl(d.drawingUrl)) { toast('The drawings link is not a valid web address'); return; }
   DB.upsert('assets', d);
   Modal.close();
   if (isNew) openAsset(d.id); else route();
@@ -773,37 +878,54 @@ function delAsset(id) {
 /* ============================================================
    PM PLAN
    ============================================================ */
+function setPMFilter(f) { PM_FILTER = f; route(); }
+
 function renderPM() {
   let rows = DB.all('pms').filter(p => matches(p, ['id','description','assetId','frequency','tech']));
+  const all = rows.slice();
+  const meName = DB.getWho();
+  if (PM_FILTER === 'mine') rows = rows.filter(r => (r.tech || '') === meName);
+  else if (PM_FILTER === 'unassigned') rows = rows.filter(r => !r.tech);
+  else if (PM_FILTER === 'overdue') rows = rows.filter(r => (DB.daysUntil(r.nextDue) ?? 99) < 0);
   rows.sort((a, b) => (a.nextDue || '9999').localeCompare(b.nextDue || '9999'));
-  const overdue = rows.filter(r => (DB.daysUntil(r.nextDue) ?? 99) < 0).length;
-  const unassigned = rows.filter(r => !r.tech).length;
+
+  const overdue = all.filter(r => (DB.daysUntil(r.nextDue) ?? 99) < 0).length;
+  const unassigned = all.filter(r => !r.tech).length;
+  const mine = all.filter(r => (r.tech || '') === meName).length;
 
   return `
   <h1 class="page">PM Plan</h1>
-  <p class="sub">${rows.length} preventive maintenance schedule${rows.length===1?'':'s'}</p>
+  <p class="sub">${all.length} preventive maintenance schedule${all.length===1?'':'s'}</p>
   <div class="grid g4" style="margin-bottom:20px">
-    <div class="stat"><div class="n">${rows.length}</div><div class="l">Scheduled PMs</div></div>
-    <div class="stat"><div class="n" style="color:${overdue?'var(--bad)':'inherit'}">${overdue}</div><div class="l">Overdue</div></div>
-    <div class="stat"><div class="n">${rows.filter(r=>{const d=DB.daysUntil(r.nextDue);return d!==null&&d>=0&&d<=30;}).length}</div><div class="l">Due in 30 days</div></div>
-    <div class="stat"><div class="n" style="color:${unassigned?'var(--warn)':'inherit'}">${unassigned}</div><div class="l">No technician assigned</div></div>
+    <div class="stat click" onclick="setPMFilter('all')"><div class="n">${all.length}</div><div class="l">Scheduled PMs</div></div>
+    <div class="stat click" onclick="setPMFilter('overdue')"><div class="n" style="color:${overdue?'var(--bad)':'inherit'}">${overdue}</div><div class="l">Overdue</div></div>
+    <div class="stat click" onclick="setPMFilter('mine')"><div class="n">${mine}</div><div class="l">Assigned to you</div></div>
+    <div class="stat click" onclick="setPMFilter('unassigned')"><div class="n" style="color:${unassigned?'var(--warn)':'inherit'}">${unassigned}</div><div class="l">Nobody responsible</div></div>
   </div>
   <div class="chipset">
     <button class="btn filled" onclick="editPM()">&#43; New PM</button>
+    <button class="fchip ${PM_FILTER==='all'?'on':''}" onclick="setPMFilter('all')">All</button>
+    <button class="fchip ${PM_FILTER==='mine'?'on':''}" onclick="setPMFilter('mine')">Mine</button>
+    <button class="fchip ${PM_FILTER==='overdue'?'on':''}" onclick="setPMFilter('overdue')">Overdue</button>
+    <button class="fchip ${PM_FILTER==='unassigned'?'on':''}" onclick="setPMFilter('unassigned')">Unassigned</button>
     <button class="btn out" onclick="exportCSV('pms')">Export CSV</button>
   </div>
+  ${unassigned && PM_FILTER === 'all' ? `<div class="note">
+    <b>${unassigned} PM${unassigned === 1 ? ' has' : 's have'} nobody responsible.</b>
+    A schedule without an owner rarely gets done — assign a technician to each one.</div>` : ''}
   <div class="card" style="padding:6px 20px 20px">
-    <h3 class="sec" style="margin-top:16px">Schedule</h3>
+    <h3 class="sec" style="margin-top:16px">${PM_FILTER==='all'?'Schedule':PM_FILTER==='mine'?'Your PMs':PM_FILTER==='overdue'?'Overdue':'Nobody responsible'}</h3>
     ${renderTable([
       { label: 'PM', render: r => `<b class="mono">${esc(r.id)}</b>` },
-      { label: 'Task', render: r => `<b>${esc(r.description || '—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>` },
+      { label: 'Task', render: r => `<b>${esc(r.description || '—')}</b> ${docChip(r.procedureUrl,'Procedure attached')}<br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>` },
       { label: 'Frequency', hideSm: true, render: r => `<span class="chip c-open">${esc(r.frequency || '—')}</span>` },
       { label: 'Next due', render: r => dueChip(r.nextDue) },
-      { label: 'Last done', hideSm: true, render: r => fmtDate(r.lastDone) },
-      { label: 'Technician', hideSm: true, render: r => r.tech ? esc(r.tech) : '<span style="color:var(--muted)">Unassigned</span>' },
+      { label: 'Responsible', render: r => r.tech
+          ? (r.tech === DB.getWho() ? `<b>${esc(r.tech)}</b> <span class="chip c-open">you</span>` : esc(r.tech))
+          : '<span class="chip c-crit">Nobody</span>' },
       { label: '', render: r => `<button class="btn tonal sm" onclick="event.stopPropagation();genWO('${jsq(r.id)}')">Generate WO</button>
         <button class="btn out sm" onclick="event.stopPropagation();completePM('${jsq(r.id)}')">Mark done</button>` }
-    ], rows, { empty: 'No PM schedules yet.', onRow: 'editPM' })}
+    ], rows, { empty: 'Nothing in this view.', onRow: 'editPM' })}
   </div>`;
 }
 
@@ -811,6 +933,10 @@ function editPM(id, presetAsset) {
   if (id && !DB.get('pms', id)) { toast('That PM no longer exists'); route(); return; }
   const p = id ? DB.get('pms', id) : {};
   const isNew = !id;
+  /* Default the owner to whoever owns the asset, so a new PM is rarely orphaned. */
+  const asset = DB.get('assets', p.assetId || presetAsset || '');
+  const defaultTech = p.tech || (isNew && asset ? (asset.owner || '') : '');
+
   Modal.open({
     title: isNew ? 'New PM schedule' : 'PM ' + p.id,
     body: `${F.text('id','PM number',p.id || DB.nextId('pms','PM-',3),{required:true,readonly:!isNew})}
@@ -820,8 +946,14 @@ function editPM(id, presetAsset) {
         <div>${F.select('frequency','Frequency',p.frequency||'monthly',FREQS)}</div>
         <div>${F.date('nextDue','Next due',p.nextDue||today())}</div>
         <div>${F.date('lastDone','Last completed',p.lastDone)}</div>
-        <div>${F.text('tech','Assigned technician',p.tech)}</div>
-      </div>`,
+      </div>
+      ${F.person('tech','Responsible technician',defaultTech,
+        {emptyLabel:'— nobody assigned —',hint:'This person sees the PM under “Your work” on Home.'})}
+      ${F.text('procedureUrl','Procedure / checklist link',p.procedureUrl,
+        {placeholder:'https://iacgroup.sharepoint.com/...',hint:LINK_HINT})}
+      ${safeUrl(p.procedureUrl) ? `<div class="actions" style="margin-top:12px">
+        ${docLink(p.procedureUrl,'Open procedure',{cls:'btn tonal sm'})}</div>` : ''}
+      ${!isNew && p.updatedBy ? `<div class="note">Last changed by <b>${esc(p.updatedBy)}</b></div>` : ''}`,
     footer: `<button class="btn filled" onclick="savePM(${isNew})">Save PM</button>
       <button class="btn out" onclick="Modal.close()">Cancel</button>
       ${!isNew && DB.can('delete') ? `<button class="btn bad" style="margin-left:auto" onclick="delPM('${jsq(p.id)}')">Delete</button>` : ''}`
@@ -832,7 +964,7 @@ function savePM(isNew) {
   const d = F.read();
   if (!d.id) { toast('PM number is required'); return; }
   if (isNew && DB.get('pms', d.id)) { toast('That PM number already exists'); return; }
-  d.updatedBy = DB.getWho();
+  if (d.procedureUrl && !safeUrl(d.procedureUrl)) { toast('The procedure link is not a valid web address'); return; }
   DB.upsert('pms', d); Modal.close(); route(); toast('PM ' + d.id + ' saved');
 }
 function delPM(id) {
@@ -842,7 +974,7 @@ function completePM(id) {
   const p = DB.get('pms', id);
   if (!p) { toast('That PM no longer exists'); route(); return; }
   const next = DB.bumpDue(p);
-  DB.upsert('pms', { id: p.id, lastDone: today(), nextDue: next, completed: 'Yes', updatedBy: DB.getWho() });
+  DB.upsert('pms', { id: p.id, lastDone: today(), nextDue: next, lastDoneBy: DB.getWho() });
   route();
   toast('PM ' + id + ' completed — next due ' + fmtDate(next));
 }
@@ -853,10 +985,14 @@ function genWO(pmId) {
     id: DB.nextId('wos', 'WO-', 4), assetId: p.assetId,
     description: p.description || ('PM ' + p.id), type: 'Preventive',
     priority: (DB.daysUntil(p.nextDue) ?? 99) < 0 ? 'High' : 'Medium',
-    assignedTo: p.tech || '', dateRequested: today(), dateDue: p.nextDue || today(),
-    status: 'Open', pmId: p.id, cause: 'To be determined', updatedBy: DB.getWho()
+    /* Carry the PM's responsible person and procedure onto the work order. */
+    assignedTo: p.tech || '', docUrl: p.procedureUrl || '',
+    requestedBy: DB.getWho(),
+    dateRequested: today(), dateDue: p.nextDue || today(),
+    status: 'Open', pmId: p.id, cause: 'To be determined'
   };
-  DB.upsert('wos', wo); route(); toast(wo.id + ' created from ' + p.id);
+  DB.upsert('wos', wo); route();
+  toast(wo.id + ' created from ' + p.id + (wo.assignedTo ? ' for ' + wo.assignedTo : ''));
 }
 
 /* ============================================================
@@ -887,13 +1023,12 @@ function renderParts() {
     <h3 class="sec" style="margin-top:16px">Parts list</h3>
     ${renderTable([
       { label: 'Part number', render: r => `<b class="mono">${esc(r.id)}</b>` },
-      { label: 'Description', render: r => `<b>${esc(r.description || '—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>` },
+      { label: 'Description', render: r => `<b>${esc(r.description || '—')}</b> ${docChip(r.docUrl,'Spec sheet')}<br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>` },
       { label: 'Mfr P/N', hideSm: true, render: r => `<span class="mono">${esc(r.mfrPn || '—')}</span>` },
       { label: 'Vendor', key: 'vendor', hideSm: true },
       { label: 'Location', render: r => `<span class="mono">${esc(r.location || '—')}</span>` },
       { label: 'On hand', num: true, render: r => r.qty ?? '—' },
       { label: 'Min', num: true, hideSm: true, render: r => r.min ?? '—' },
-      { label: 'Unit cost', num: true, hideSm: true, render: r => money(r.cost) },
       { label: 'Status', render: r => { const s = DB.partStatus(r); return `<span class="chip ${s.cls}">${s.label}</span>`; } },
       { label: '', render: r => `<button class="btn tonal sm" onclick="event.stopPropagation();countPart('${jsq(r.id)}')">Count</button>` }
     ], rows, { empty: 'No parts yet.', onRow: 'editPart' })}
@@ -906,7 +1041,7 @@ function editPart(id, presetAsset) {
   const isNew = !id;
   Modal.open({
     title: isNew ? 'New part' : 'Part ' + p.id,
-    body: `${p.imageUrl ? `<div class="prev"><img src="${esc(p.imageUrl)}" alt="" onerror="this.parentNode.style.display='none'"/></div>` : ''}
+    body: `${safeUrl(p.imageUrl) ? `<div class="prev"><img src="${esc(safeUrl(p.imageUrl))}" alt="" onerror="this.parentNode.style.display='none'"/></div>` : ''}
       ${F.text('id','Part number',p.id || DB.nextId('parts','P-',4),{required:true,readonly:!isNew})}
       ${F.text('description','Description',p.description,{required:true})}
       ${F.select('assetId','Used on asset',p.assetId||presetAsset||'',assetOptions())}
@@ -917,11 +1052,11 @@ function editPart(id, presetAsset) {
         <div>${F.num('cost','Unit cost',p.cost,{step:'0.01'})}</div>
         <div>${F.num('qty','Quantity on hand',p.qty,{step:'1'})}</div>
         <div>${F.num('min','Minimum quantity',p.min,{step:'1'})}</div>
-        <div>${F.num('max','Maximum quantity',p.max,{step:'1'})}</div>
       </div>
-      ${F.text('imageUrl','Picture URL',p.imageUrl,{placeholder:'https://…'})}
-      ${F.text('docUrl','Spec sheet / manual URL',p.docUrl,{placeholder:'https://…'})}
-      ${p.docUrl ? `<div style="margin-top:10px"><a href="${esc(p.docUrl)}" target="_blank" rel="noopener">Open spec sheet &#8599;</a></div>` : ''}`,
+      ${F.text('imageUrl','Picture link',p.imageUrl,{placeholder:'https://…'})}
+      ${F.text('docUrl','Spec sheet / manual link',p.docUrl,{placeholder:'https://…',hint:LINK_HINT})}
+      ${safeUrl(p.docUrl) ? `<div class="actions" style="margin-top:12px">
+        ${docLink(p.docUrl,'Open spec sheet',{cls:'btn tonal sm'})}</div>` : ''}`,
     footer: `<button class="btn filled" onclick="savePart(${isNew})">Save part</button>
       <button class="btn out" onclick="Modal.close()">Cancel</button>
       ${!isNew && DB.can('delete') ? `<button class="btn bad" style="margin-left:auto" onclick="delPart('${jsq(p.id)}')">Delete</button>` : ''}`
@@ -932,7 +1067,7 @@ function savePart(isNew) {
   const d = F.read();
   if (!d.id || !d.description) { toast('Part number and description are required'); return; }
   if (isNew && DB.get('parts', d.id)) { toast('That part number already exists'); return; }
-  d.updatedBy = DB.getWho();
+  if (d.docUrl && !safeUrl(d.docUrl)) { toast('The document link is not a valid web address'); return; }
   DB.upsert('parts', d); Modal.close(); route(); toast('Part ' + d.id + ' saved');
 }
 function delPart(id) {
@@ -943,7 +1078,7 @@ function countPart(id) {
   if (!p) { toast('That part no longer exists'); route(); return; }
   const v = prompt('Quantity on hand for ' + id + ' (' + (p.description || '') + '):', p.qty ?? '');
   if (v === null) return;
-  DB.upsert('parts', { id, qty: v.trim(), updatedBy: DB.getWho() });
+  DB.upsert('parts', { id, qty: v.trim(), countedBy: DB.getWho(), countedOn: today() });
   route(); toast(id + ' counted — ' + v + ' on hand');
 }
 
@@ -956,25 +1091,31 @@ function setWOFilter(f) { WO_FILTER = f; route(); }
 function renderWO() {
   let rows = DB.all('wos').filter(w => matches(w, ['id','description','assetId','assignedTo','requestedBy','status']));
   const all = rows.slice();
+  const meName = DB.getWho();
   if (WO_FILTER === 'open') rows = rows.filter(DB.isOpen);
   else if (WO_FILTER === 'progress') rows = rows.filter(w => w.status === 'In Progress');
   else if (WO_FILTER === 'done') rows = rows.filter(DB.isDone);
-  else if (WO_FILTER === 'mine') rows = rows.filter(w => DB.isActive(w) && (w.assignedTo || '') === DB.getWho());
+  else if (WO_FILTER === 'mine') rows = rows.filter(w => DB.isActive(w) && (w.assignedTo || '') === meName);
+  else if (WO_FILTER === 'unassigned') rows = rows.filter(w => DB.isActive(w) && !w.assignedTo);
   rows.sort((a, b) => (DB.woDate(b) || '').localeCompare(DB.woDate(a) || ''));
 
   const openN = all.filter(DB.isOpen).length;
   const progN = all.filter(w => w.status === 'In Progress').length;
-  const doneN = all.filter(DB.isDone).length;
+  const mineN = all.filter(w => DB.isActive(w) && (w.assignedTo || '') === meName).length;
+  const unassignedN = all.filter(w => DB.isActive(w) && !w.assignedTo).length;
   const hours = all.filter(DB.isDone).reduce((s, w) => s + (DB.num(w.hours) || 0), 0);
+
+  const title = { all: 'All work orders', mine: 'Assigned to you', open: 'Pending',
+    progress: 'In progress', done: 'Completed', unassigned: 'Nobody assigned' }[WO_FILTER];
 
   return `
   <h1 class="page">Work Orders</h1>
-  <p class="sub">${all.length} work order${all.length===1?'':'s'} on record</p>
+  <p class="sub">${all.length} work order${all.length===1?'':'s'} on record · ${hours.toFixed(1)}h logged</p>
   <div class="grid g4" style="margin-bottom:20px">
+    <div class="stat click" onclick="setWOFilter('mine')"><div class="n">${mineN}</div><div class="l">Assigned to you</div></div>
     <div class="stat click" onclick="setWOFilter('open')"><div class="n">${openN}</div><div class="l">Pending</div></div>
     <div class="stat click" onclick="setWOFilter('progress')"><div class="n">${progN}</div><div class="l">In progress</div></div>
-    <div class="stat click" onclick="setWOFilter('done')"><div class="n">${doneN}</div><div class="l">Completed</div></div>
-    <div class="stat"><div class="n">${hours.toFixed(1)}<small style="font-size:15px">h</small></div><div class="l">Labour logged</div></div>
+    <div class="stat click" onclick="setWOFilter('unassigned')"><div class="n" style="color:${unassignedN?'var(--bad)':'inherit'}">${unassignedN}</div><div class="l">Nobody assigned</div></div>
   </div>
   <div class="chipset">
     <button class="btn filled" onclick="editWO()">&#43; New work order</button>
@@ -987,18 +1128,21 @@ function renderWO() {
       <button class="fchip ${WO_FILTER==='mine'?'on':''}" onclick="setWOFilter('mine')">Mine</button>
       <button class="fchip ${WO_FILTER==='open'?'on':''}" onclick="setWOFilter('open')">Pending</button>
       <button class="fchip ${WO_FILTER==='progress'?'on':''}" onclick="setWOFilter('progress')">In progress</button>
+      <button class="fchip ${WO_FILTER==='unassigned'?'on':''}" onclick="setWOFilter('unassigned')">Unassigned</button>
       <button class="fchip ${WO_FILTER==='done'?'on':''}" onclick="setWOFilter('done')">Completed</button>` : ''}
     <button class="btn out" onclick="exportCSV('wos')">Export CSV</button>
   </div>
   ${WO_VIEW === 'calendar' ? renderWOCalendar() : `
   <div class="card" style="padding:6px 20px 20px">
-    <h3 class="sec" style="margin-top:16px">${WO_FILTER==='all'?'All work orders':WO_FILTER==='mine'?'Assigned to you':WO_FILTER==='open'?'Pending':WO_FILTER==='progress'?'In progress':'Completed'}</h3>
+    <h3 class="sec" style="margin-top:16px">${esc(title)}</h3>
     ${renderTable([
       { label: 'WO', render: r => `<b class="mono">${esc(r.id)}</b>` },
-      { label: 'Description', render: r => `<b>${esc(r.description || '—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}${r.pmId?' · from '+esc(r.pmId):''}</small>` },
+      { label: 'Description', render: r => `<b>${esc(r.description || '—')}</b> ${docChip(r.docUrl,'Reference document')}<br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}${r.pmId?' · from '+esc(r.pmId):''}</small>` },
       { label: 'Type', hideSm: true, render: r => `<span class="chip c-open">${esc(r.type || '—')}</span>` },
       { label: 'Priority', render: r => prioChip(r.priority) },
-      { label: 'Assigned to', hideSm: true, render: r => r.assignedTo ? esc(r.assignedTo) : '<span style="color:var(--muted)">Unassigned</span>' },
+      { label: 'Assigned to', render: r => r.assignedTo
+          ? (r.assignedTo === meName ? `<b>${esc(r.assignedTo)}</b> <span class="chip c-open">you</span>` : esc(r.assignedTo))
+          : '<span class="chip c-crit">Nobody</span>' },
       { label: 'Scheduled', hideSm: true, render: r => fmtDate(r.dateDue || r.dateRequested) },
       { label: 'Hours', num: true, hideSm: true, render: r => r.hours ?? '—' },
       { label: 'Status', render: r => statusChip(r.status) }
@@ -1028,13 +1172,15 @@ function renderWOCalendar() {
   DB.all('wos').filter(w => matches(w, ['id','description','assetId','assignedTo','status'])).forEach(w => {
     const cls = DB.isDone(w) ? 'ev-done' : w.status === 'In Progress' ? 'ev-prog'
       : (w.status === 'On Hold' || w.status === 'Cancelled') ? 'ev-hold' : 'ev-open';
-    push(DB.woDate(w), `<div class="ev ${cls}" title="${esc(w.id+' · '+(w.description||''))}"
-      onclick="editWO('${jsq(w.id)}')">${esc(w.id)} ${esc((w.description||'').slice(0,22))}</div>`);
+    const who = w.assignedTo ? ' · ' + w.assignedTo : '';
+    push(DB.woDate(w), `<div class="ev ${cls}" title="${esc(w.id+' · '+(w.description||'')+who)}"
+      onclick="editWO('${jsq(w.id)}')">${esc(w.id)} ${esc((w.description||'').slice(0,20))}</div>`);
   });
   if (CAL.pms) {
     DB.all('pms').forEach(p => {
-      push(p.nextDue, `<div class="ev ev-pm" title="${esc(p.id+' · '+(p.description||''))}"
-        onclick="editPM('${jsq(p.id)}')">${esc(p.id)} ${esc((p.description||'').slice(0,20))}</div>`);
+      const who = p.tech ? ' · ' + p.tech : '';
+      push(p.nextDue, `<div class="ev ev-pm" title="${esc(p.id+' · '+(p.description||'')+who)}"
+        onclick="editPM('${jsq(p.id)}')">${esc(p.id)} ${esc((p.description||'').slice(0,18))}</div>`);
     });
   }
 
@@ -1064,8 +1210,7 @@ function renderWOCalendar() {
       <span><i style="background:var(--surf-3)"></i>On hold / cancelled</span>
       ${CAL.pms?'<span><i style="background:var(--pur-c)"></i>PM due</span>':''}
     </div>
-    <div class="note">Work orders sit on their <b>scheduled date</b> when set, otherwise the
-    completion date, otherwise the date requested.</div>
+    <div class="note">Hover any item to see who it is assigned to.</div>
   </div>`;
 }
 
@@ -1076,27 +1221,41 @@ function editWO(id, presetAsset) {
   const partOpts = [{ v: '', t: '— none —' }].concat(
     DB.all('parts').filter(p => !w.assetId || !p.assetId || p.assetId === w.assetId || p.assetId === presetAsset)
       .map(p => ({ v: p.id, t: p.id + ' · ' + (p.description || '') })));
+  /* Offer the asset's manual right on the work order — the tech is usually
+     standing at the machine when they open this. */
+  const asset = DB.get('assets', w.assetId || presetAsset || '');
 
   Modal.open({
     title: isNew ? 'New work order' : 'Work order ' + w.id,
     body: `${F.text('id','Work order number',w.id || DB.nextId('wos','WO-',4),{required:true,readonly:!isNew})}
       ${F.select('assetId','Asset',w.assetId||presetAsset||'',assetOptions(),{required:true})}
+      ${asset && (safeUrl(asset.manualUrl)||safeUrl(asset.drawingUrl)) ? `<div class="actions" style="margin-top:10px">
+        ${docLink(asset.manualUrl,'Machine manual',{cls:'btn tonal sm',icon:'&#128214;'})}
+        ${docLink(asset.drawingUrl,'Drawings',{cls:'btn tonal sm',icon:'&#128208;'})}
+      </div>` : ''}
       ${F.area('description','Description of work',w.description,3)}
       <div class="f2">
         <div>${F.select('type','Work type',w.type||'Repair',WO_TYPES)}</div>
         <div>${F.select('priority','Priority',w.priority||'Medium',PRIORITIES)}</div>
-        <div>${F.text('requestedBy','Requested by',w.requestedBy||(isNew?DB.getWho():''))}</div>
-        <div>${F.text('assignedTo','Assigned to',w.assignedTo)}</div>
+      </div>
+      ${F.person('assignedTo','Assigned to',w.assignedTo,
+        {emptyLabel:'— nobody assigned —',hint:'They will see this under “Your work” on Home.'})}
+      <div class="f2">
+        <div>${F.person('requestedBy','Requested by',w.requestedBy||(isNew?DB.getWho():''),{emptyLabel:'— not recorded —'})}</div>
+        <div>${F.select('status','Status',w.status||'Open',WO_STATUS)}</div>
         <div>${F.date('dateRequested','Date requested',w.dateRequested||today())}</div>
         <div>${F.date('dateDue','Scheduled date (calendar)',w.dateDue)}</div>
         <div>${F.date('dateStarted','Date started',w.dateStarted)}</div>
         <div>${F.date('dateCompleted','Date completed',w.dateCompleted)}</div>
-        <div>${F.select('status','Status',w.status||'Open',WO_STATUS)}</div>
         <div>${F.num('hours','Labour hours',w.hours,{step:'0.5'})}</div>
         <div>${F.num('cost','Cost',w.cost,{step:'0.01'})}</div>
       </div>
       ${F.select('cause','Cause of failure',w.cause||'To be determined',CAUSES)}
       ${F.select('partsUsed','Parts used',w.partsUsed,partOpts)}
+      ${F.text('docUrl','Reference document link',w.docUrl,
+        {placeholder:'https://iacgroup.sharepoint.com/...',hint:LINK_HINT})}
+      ${safeUrl(w.docUrl) ? `<div class="actions" style="margin-top:12px">
+        ${docLink(w.docUrl,'Open document',{cls:'btn tonal sm'})}</div>` : ''}
       ${F.area('notes','Technician notes',w.notes,3)}
       ${w.pmId ? `<div class="note">Generated from PM <b>${esc(w.pmId)}</b>. Completing this rolls that PM forward.</div>` : ''}
       ${!isNew && w.updatedBy ? `<div class="note">Last changed by <b>${esc(w.updatedBy)}</b></div>` : ''}`,
@@ -1112,7 +1271,7 @@ function saveWO(isNew) {
   if (!d.id) { toast('Work order number is required'); return; }
   if (!d.assetId) { toast('Pick the asset this work order is for'); return; }
   if (isNew && DB.get('wos', d.id)) { toast('That work order number already exists'); return; }
-  d.updatedBy = DB.getWho();
+  if (d.docUrl && !safeUrl(d.docUrl)) { toast('The document link is not a valid web address'); return; }
   DB.upsert('wos', d); Modal.close(); route(); toast('Work order ' + d.id + ' saved');
 }
 
@@ -1121,12 +1280,14 @@ function closeWO(id) {
   if (!d.cause || d.cause === 'To be determined') { toast('Record a cause of failure before completing'); return; }
   d.status = 'Completed';
   if (!d.dateCompleted) d.dateCompleted = today();
-  d.updatedBy = DB.getWho();
+  /* If nobody was assigned, the person closing it did the work. */
+  if (!d.assignedTo) d.assignedTo = DB.getWho();
+  d.completedBy = DB.getWho();
   DB.upsert('wos', d);
   const w = DB.get('wos', id);
   if (w && w.pmId) {
     const p = DB.get('pms', w.pmId);
-    if (p) DB.upsert('pms', { id: p.id, lastDone: d.dateCompleted, nextDue: DB.bumpDue(p), updatedBy: DB.getWho() });
+    if (p) DB.upsert('pms', { id: p.id, lastDone: d.dateCompleted, nextDue: DB.bumpDue(p), lastDoneBy: DB.getWho() });
   }
   Modal.close(); route(); toast(id + ' completed');
 }
@@ -1150,7 +1311,9 @@ function renderImport() {
     <h3 class="sec">1 · Choose what you are importing</h3>
     <div class="chipset">${Object.keys(ENTITY_LABEL).map(e =>
       `<button class="fchip ${IMPORT.entity===e?'on':''}" onclick="setImportEntity('${e}')">${ENTITY_LABEL[e]}</button>`).join('')}</div>
-    <div class="note">Recognised fields for <b>${ENTITY_LABEL[IMPORT.entity]}</b>: <span class="mono">${fieldList(IMPORT.entity)}</span>.</div>
+    <div class="note">Recognised fields for <b>${ENTITY_LABEL[IMPORT.entity]}</b>: <span class="mono">${fieldList(IMPORT.entity)}</span>.
+      Document links import too — a column called <span class="mono">Manual</span> or
+      <span class="mono">SharePoint Link</span> maps automatically.</div>
   </div>
   <div class="card">
     <h3 class="sec">2 · Load the file</h3>
@@ -1226,8 +1389,7 @@ function readCSVFile(file) {
 function runImport() {
   const clean = CSV.applyMap(IMPORT.records, IMPORT.map);
   const prefix = { assets: '', pms: 'PM-', parts: 'P-', wos: 'WO-' }[IMPORT.entity];
-  const who = DB.getWho();
-  clean.forEach(r => { if (!r.id) r.id = DB.nextId(IMPORT.entity, prefix, 4); r.updatedBy = who; });
+  clean.forEach(r => { if (!r.id) r.id = DB.nextId(IMPORT.entity, prefix, 4); });
   const { added, updated } = DB.bulkUpsert(IMPORT.entity, clean);
   const ent = IMPORT.entity;
   cancelImport();
@@ -1251,11 +1413,11 @@ function renderSettings() {
   const counts = { Assets: db.assets.length, PMs: db.pms.length, Parts: db.parts.length, 'Work orders': db.wos.length };
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const admin = DB.isAdmin();
+  const docs = db.assets.filter(a => safeUrl(a.manualUrl) || safeUrl(a.drawingUrl)).length;
 
   return `
   <h1 class="page">Settings</h1>
   <p class="sub">Signed in as <b>${esc(s.who)}</b> · ${esc(ROLE_LABEL[s.role] || s.role)}</p>
-
   <div class="card">
     <h3 class="sec">Your account</h3>
     <div class="tablewrap"><table><tbody>
@@ -1268,7 +1430,6 @@ function renderSettings() {
       <button class="btn out" onclick="signOut()">Sign out</button>
     </div>
   </div>
-
   <div class="card">
     <h3 class="sec">Connection</h3>
     ${s.mode === 'cloud'
@@ -1282,37 +1443,23 @@ function renderSettings() {
       <button class="btn filled" onclick="reconnect()">${s.mode === 'cloud' ? 'Refresh now' : 'Try to reconnect'}</button>
     </div>
   </div>
-
   <div class="card">
     <h3 class="sec">Site</h3>
     <label for="siteName">Site name</label>
     <input id="siteName" value="${esc(db.meta.site || '')}" ${admin ? 'onchange="saveSite(this.value)"' : 'readonly'}/>
     ${admin ? '' : '<div class="note">Only an admin can change this.</div>'}
   </div>
-
   <div class="card">
     <h3 class="sec">Data in the database</h3>
     ${renderTable([{ label: 'Collection', key: 'k' }, { label: 'Records', num: true, key: 'v' }],
       Object.entries(counts).map(([k, v]) => ({ id: k, k, v })))}
-    <div class="note">${total} record${total===1?'':'s'} total.</div>
+    <div class="note">${total} record${total===1?'':'s'} total · ${docs} asset${docs===1?'':'s'} with documents linked.</div>
   </div>
-
   ${admin ? `<div class="card">
-    <h3 class="sec">Move existing data into the database</h3>
-    <p style="color:var(--muted);margin:0 0 4px">
-      One-time migration: uploads everything currently in this browser to the shared database.
-      Records with the same ID are merged, so running it twice is safe.</p>
-    <div class="actions">
-      <button class="btn filled" onclick="migrateUp()" ${s.mode==='cloud'?'':'disabled'}>Upload this device's data</button>
-      <button class="btn out" onclick="Backup.export()">Download backup first</button>
-    </div>
-    ${s.mode !== 'cloud' ? '<div class="note bad">Connect to the database before migrating.</div>' : ''}
-  </div>
-
-  <div class="card">
-    <h3 class="sec">Backup</h3>
+    <h3 class="sec">Backup and sample data</h3>
     <div class="actions">
       <button class="btn filled" onclick="Backup.export()">Download backup</button>
+      <button class="btn out" onclick="migrateUp()" ${s.mode==='cloud'?'':'disabled'}>Upload this device's data</button>
       <button class="btn out" onclick="seedSample()">Load sample data</button>
       <a class="btn out" href="#/users">Manage users</a>
     </div>
@@ -1357,15 +1504,19 @@ function seedSample() {
   if (!DB.isAdmin()) { toast('Only an admin can load sample data'); return; }
   const d = today();
   const plus = n => DB.addDays(d, n);
-  const who = DB.getWho();
+  const me = DB.getWho();
 
   DB.bulkUpsert('assets', [
-    { id: '3526', name: 'Top Roll Assembly', manufacturer: '3Con', model: 'TR-900', project: '3527', location: 'Ultrasonic weld cell', status: 'Active', notes: 'Ultrasonic sonotrode weld cell', updatedBy: who },
-    { id: '3527', name: 'Air Compressor #1', manufacturer: 'Atlas Copco', model: 'GA22', location: 'Utilities room', status: 'Active', updatedBy: who }
+    { id: '3526', name: 'Top Roll Assembly', manufacturer: '3Con', model: 'TR-900', project: '3527',
+      location: 'Ultrasonic weld cell', status: 'Active', owner: me,
+      notes: 'Ultrasonic sonotrode weld cell',
+      manualUrl: 'https://example.com/manuals/3526-top-roll.pdf' },
+    { id: '3527', name: 'Air Compressor #1', manufacturer: 'Atlas Copco', model: 'GA22',
+      location: 'Utilities room', status: 'Active', owner: me }
   ]);
   DB.bulkUpsert('pms', [
-    { id: 'PM-003', assetId: '3526', description: 'Inspect and clean sonotrodes/anvils; check ultrasonic weld quality', frequency: 'weekly', nextDue: plus(2) },
-    { id: 'PM-004', assetId: '3526', description: 'Clean/replace main air supply filters and moisture separators', frequency: 'monthly', nextDue: plus(9) },
+    { id: 'PM-003', assetId: '3526', description: 'Inspect and clean sonotrodes/anvils; check ultrasonic weld quality', frequency: 'weekly', nextDue: plus(2), tech: me },
+    { id: 'PM-004', assetId: '3526', description: 'Clean/replace main air supply filters and moisture separators', frequency: 'monthly', nextDue: plus(9), tech: me },
     { id: 'PM-005', assetId: '3526', description: 'Lubricate sliding and rotating components', frequency: 'monthly', nextDue: plus(14) },
     { id: 'PM-006', assetId: '3526', description: 'Clean photo-eyes/sensors and air blow-off nozzles', frequency: 'monthly', nextDue: plus(22) },
     { id: 'PM-007', assetId: '3526', description: 'Inspect ultrasonic generators and tightening controller', frequency: 'quarterly', nextDue: plus(86) },
@@ -1380,17 +1531,16 @@ function seedSample() {
     { id: 'CT_10591', description: 'SIMATIC ET 200SP analog input module', assetId: '3526', mfrPn: '6ES7134-6GF00-0AA1', vendor: 'SIEMENS', location: 'SP1-E3-A11' },
     { id: 'CT_1707', description: 'SIMATIC ET 200SP digital input module', assetId: '3526', mfrPn: '6ES7131-6BF01-0BA0', vendor: 'SIEMENS', location: 'SP1-E3-A5' },
     { id: 'CT_1708', description: 'SIMATIC ET 200SP digital output module', assetId: '3526', mfrPn: '6ES7132-6BH01-0BA0', vendor: 'SIEMENS', location: 'SP1-E3-A4' },
-    { id: 'CT_1709', description: 'SIMATIC ET 200SP digital output module', assetId: '3526', mfrPn: '6ES7132-6BF01-0BA0', vendor: 'SIEMENS', location: 'SP1-E3-A6' },
     { id: 'CT_1711', description: 'SIMATIC ET 200SP BaseUnit BU15-P16+A10+2D', assetId: '3526', mfrPn: '6ES7193-6BP20-0DA0', vendor: 'SIEMENS', location: 'SP1-E3-A3' },
     { id: 'P-1001', description: 'Compressor oil filter', assetId: '3527', mfrPn: 'GRA-4471', vendor: 'Grainger', location: 'SP1-A1-B2', qty: '12', min: '5', max: '20', cost: '38.50' }
   ]);
   DB.bulkUpsert('wos', [
     { id: 'WO-1001', assetId: '3527', description: 'Oil leak at compressor head', type: 'Repair', priority: 'High',
-      requestedBy: 'Chris Myers', assignedTo: 'John Davis', dateRequested: DB.addDays(d,-7),
+      requestedBy: 'Chris Myers', assignedTo: me, dateRequested: DB.addDays(d,-7),
       dateStarted: DB.addDays(d,-6), dateDue: DB.addDays(d,1), hours: '4.0', cost: '450',
       status: 'In Progress', cause: 'To be determined' },
     { id: 'WO-1002', assetId: '3526', description: 'Replace worn sonotrode on station 2', type: 'Repair', priority: 'Medium',
-      requestedBy: 'Marcelo Frazzato', assignedTo: 'John Davis', dateRequested: DB.addDays(d,-21),
+      requestedBy: me, assignedTo: me, dateRequested: DB.addDays(d,-21),
       dateStarted: DB.addDays(d,-20), dateCompleted: DB.addDays(d,-20), hours: '2.5', cost: '1250',
       status: 'Completed', cause: 'Wear / end of life', partsUsed: 'CT_12672' },
     { id: 'WO-1003', assetId: '3526', description: 'Weld quality drift — investigate generator output', type: 'Troubleshoot',
@@ -1401,7 +1551,7 @@ function seedSample() {
       status: 'On Hold', cause: 'To be determined' }
   ]);
   route();
-  toast('Sample data loaded — 2 assets, 7 PMs, 10 parts, 4 work orders');
+  toast('Sample data loaded — 2 assets, 7 PMs, 9 parts, 4 work orders');
 }
 
 /* ============================================================

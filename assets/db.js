@@ -1,8 +1,8 @@
 /* ============================================================
    db.js — storage layer (cloud database + offline fallback)
    ------------------------------------------------------------
-   Every screen calls DB.all() / DB.get() synchronously while
-   building HTML, so this keeps an in-memory cache:
+   Screens call DB.all() / DB.get() synchronously while building
+   HTML, so this keeps an in-memory cache:
 
      reads   -> served instantly from cache
      writes  -> applied to cache immediately, pushed in background
@@ -20,6 +20,7 @@ const DB = (() => {
   const TOKEN_KEY = 'techx.token';
   const USER_KEY = 'techx.user';
   const QUEUE_KEY = 'techx.queue';
+  const PEOPLE_KEY = 'techx.people';
   const API = '/api/data';
 
   const EMPTY = {
@@ -34,6 +35,7 @@ const DB = (() => {
   let onChange = null;
   let lastError = '';
   let me = null;
+  let people = [];
 
   /* ---------- local persistence ---------- */
   function loadLocal() {
@@ -45,15 +47,15 @@ const DB = (() => {
     } catch (e) { cache = structuredClone(EMPTY); }
     return cache;
   }
-  function saveLocal() {
-    try { localStorage.setItem(KEY, JSON.stringify(cache)); } catch (e) {}
-  }
+  function saveLocal() { try { localStorage.setItem(KEY, JSON.stringify(cache)); } catch (e) {} }
   function load() { return cache || loadLocal(); }
 
   /* ---------- session ---------- */
   const getToken = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; } };
   const setToken = t => { try { localStorage.setItem(TOKEN_KEY, t); } catch (e) {} };
-  const clearToken = () => { try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); } catch (e) {} };
+  const clearToken = () => {
+    try { localStorage.removeItem(TOKEN_KEY); localStorage.removeItem(USER_KEY); } catch (e) {}
+  };
 
   function setUser(u) {
     me = u;
@@ -70,16 +72,38 @@ const DB = (() => {
   const role = () => { const u = loadUser(); return u ? u.role : ''; };
   const isAdmin = () => role() === 'admin';
 
-  /* Single place that decides what each role may do. The server
-     enforces the same rules — this only shapes the UI. */
   function can(action) {
     const r = role();
     if (!r) return false;
     if (r === 'admin') return true;
-    /* maintenance */
     return ['view', 'createWO', 'editWO', 'completeWO', 'createPM', 'editPM',
             'completePM', 'createPart', 'editPart', 'countPart',
             'createAsset', 'editAsset'].includes(action);
+  }
+
+  /* ---------- people (for assignment dropdowns) ----------
+     Cached locally so a dropdown still lists names when offline. */
+  function loadPeople() {
+    if (people.length) return people;
+    try { people = JSON.parse(localStorage.getItem(PEOPLE_KEY) || '[]'); } catch (e) { people = []; }
+    return people;
+  }
+  function setPeople(list) {
+    people = Array.isArray(list) ? list : [];
+    try { localStorage.setItem(PEOPLE_KEY, JSON.stringify(people)); } catch (e) {}
+  }
+  async function fetchPeople() {
+    const r = await api('GET', null, '?people=1');
+    setPeople(r.people || []);
+    return people;
+  }
+  /* Names for a dropdown. Always includes whatever the record already
+     holds, so an assignment to someone since deactivated is never lost
+     silently just because they are no longer in the list. */
+  function peopleNames(includeValue) {
+    const names = loadPeople().map(p => p.full_name || p.name).filter(Boolean);
+    if (includeValue && !names.includes(includeValue)) names.unshift(includeValue);
+    return names;
   }
 
   /* ---------- offline queue ---------- */
@@ -91,18 +115,46 @@ const DB = (() => {
 
   /* ---------- server ---------- */
   async function api(method, body, qs) {
-    const res = await fetch(API + (qs || ''), {
-      method,
-      headers: { 'Content-Type': 'application/json', 'x-session': getToken() },
-      body: body ? JSON.stringify(body) : undefined,
-      cache: 'no-store'
-    });
+    let res;
+    try {
+      res = await fetch(API + (qs || ''), {
+        method,
+        headers: { 'Content-Type': 'application/json', 'x-session': getToken() },
+        body: body ? JSON.stringify(body) : undefined,
+        cache: 'no-store'
+      });
+    } catch (e) {
+      const err = new Error('No network connection to the server');
+      err.offline = true;
+      throw err;
+    }
+    /* Read as text first: a crashed function returns an HTML error page,
+       and parsing blindly would hide the real cause. */
+    const text = await res.text();
     let payload = null;
-    try { payload = await res.json(); } catch (e) {}
+    try { payload = text ? JSON.parse(text) : null; } catch (e) {}
+
     if (res.status === 401) { const e = new Error((payload && payload.error) || 'Please sign in'); e.auth = true; throw e; }
     if (res.status === 403) { const e = new Error((payload && payload.error) || 'Not allowed'); e.forbidden = true; throw e; }
-    if (!res.ok) throw new Error((payload && payload.error) || ('Server error ' + res.status));
+    if (!res.ok) {
+      if (payload && payload.error) throw new Error(payload.error);
+      const e = new Error('The server did not respond properly (HTTP ' + res.status +
+        '). Open /api/data?diag=1 to see what is wrong.');
+      e.serverDown = true;
+      throw e;
+    }
+    if (payload === null) throw new Error('The server sent an empty response');
     return payload;
+  }
+
+  async function diagnose() {
+    const res = await fetch(API + '?diag=1', { cache: 'no-store' });
+    const text = await res.text();
+    try { return JSON.parse(text); }
+    catch (e) {
+      return { ok: false, error: 'The API did not return JSON (HTTP ' + res.status +
+        '). The api/ folder is probably missing from the deployment.' };
+    }
   }
 
   async function login(username, password) {
@@ -120,9 +172,7 @@ const DB = (() => {
     mode = 'local';
   }
 
-  async function changePassword(current, next) {
-    return api('POST', { op: 'changePassword', current, next });
-  }
+  const changePassword = (current, next) => api('POST', { op: 'changePassword', current, next });
 
   async function push(op) {
     if (mode !== 'cloud') { queue.push(op); saveQueue(); return; }
@@ -133,8 +183,7 @@ const DB = (() => {
     } catch (e) {
       if (e.auth) { mode = 'local'; lastError = 'Signed out'; }
       else if (e.forbidden) {
-        /* Server refused on permissions. Do not queue — it would fail
-           forever. Surface it and pull the true state back. */
+        /* Refused on permissions — never queue, it would fail forever. */
         lastError = e.message;
         try { await refresh(); } catch (err) {}
         if (typeof toast === 'function') toast(e.message);
@@ -153,7 +202,7 @@ const DB = (() => {
     for (const op of pending) {
       try { await api('POST', op); sent++; }
       catch (e) {
-        if (e.forbidden) continue;   /* drop: will never succeed */
+        if (e.forbidden) continue;
         queue.push(op); saveQueue(); throw e;
       }
     }
@@ -168,6 +217,7 @@ const DB = (() => {
       applyServer(data);
       mode = 'cloud';
       lastError = '';
+      fetchPeople().catch(() => {});      /* dropdowns; not worth blocking on */
       const f = await flushQueue().catch(() => ({ sent: 0 }));
       if (f.sent) { const d2 = await api('GET'); applyServer(d2); }
       return { mode, flushed: f.sent };
@@ -331,7 +381,8 @@ const DB = (() => {
       mode, lastRev, pending: queue.length,
       who: u ? u.name : '', role: u ? u.role : '',
       username: u ? u.username : '',
-      signedIn: !!getToken(), error: lastError
+      signedIn: !!getToken(), error: lastError,
+      peopleCount: loadPeople().length
     };
   }
 
@@ -341,7 +392,8 @@ const DB = (() => {
     nextId, bumpDue, daysUntil, assetName, partStatus, num, addDays,
     touchAsset, forAsset, isOpen, isActive, isDone, woDate, FREQ_DAYS,
     connect, refresh, startPolling, stopPolling, seedServer, flushQueue,
-    login, logout, changePassword, listUsers, addUser, updateUser,
+    login, logout, changePassword, listUsers, addUser, updateUser, diagnose,
+    fetchPeople, peopleNames, loadPeople, setPeople,
     status, user, getWho, role, isAdmin, can, loadQueue, setUser, clearToken,
     setOnChange(fn) { onChange = fn; },
     api
