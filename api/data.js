@@ -4,23 +4,13 @@
    Storage: Neon Postgres (Vercel Marketplace).
 
    IMPORTANT: there must be NO package.json inside this folder.
-   One here makes Vercel treat api/ as a separate package, and
-   the database driver never gets installed — which surfaces as
+   One here makes Vercel treat api/ as a separate package and the
+   database driver never gets installed — which surfaces as
    FUNCTION_INVOCATION_FAILED with "Cannot find package".
 
-   The driver is loaded with a dynamic import inside try/catch so
-   a missing dependency returns readable JSON instead of taking
-   the whole function down before it can respond.
-
-   Accounts:
-     - Passwords stored as PBKDF2-SHA256 (210k rounds) with a
-       per-user random salt. Never stored or returned in plain.
-     - Sign-in returns a session token; the browser holds only
-       the token.
-
-   Roles:
-     - maintenance : create/edit assets, PMs, parts, work orders
-     - admin       : all of that, plus delete, import, and users
+   The driver loads via dynamic import inside try/catch so a
+   missing dependency returns readable JSON instead of taking the
+   function down before it can respond.
    ============================================================ */
 
 import crypto from 'node:crypto';
@@ -30,7 +20,6 @@ const ROLES = ['maintenance', 'admin'];
 const SESSION_DAYS = 30;
 const PBKDF2_ROUNDS = 210000;
 
-/* ---------- driver ---------- */
 let _neon = null;
 async function getNeon() {
   if (_neon) return _neon;
@@ -54,13 +43,12 @@ async function connect() {
     err.code = 'NO_URL';
     throw err;
   }
-  /* channel_binding is meaningless over Neon's HTTP driver and can trip it up. */
+  /* channel_binding is meaningless over Neon's HTTP driver. */
   const url = raw.replace(/([?&])channel_binding=[^&]*/i, '$1').replace(/[?&]$/, '');
   const neon = await getNeon();
   return neon(url);
 }
 
-/* ---------- passwords ---------- */
 function hashPassword(password, salt) {
   const s = salt || crypto.randomBytes(16).toString('hex');
   const hash = crypto.pbkdf2Sync(String(password), s, PBKDF2_ROUNDS, 32, 'sha256').toString('hex');
@@ -75,44 +63,26 @@ function passwordMatches(password, salt, expectedHash) {
 }
 const newToken = () => crypto.randomBytes(32).toString('hex');
 
-/* ---------- schema ---------- */
 let ready = false;
 async function ensureSchema(sql) {
   if (ready) return;
   await sql`
     CREATE TABLE IF NOT EXISTS records (
-      collection  TEXT        NOT NULL,
-      id          TEXT        NOT NULL,
-      data        JSONB       NOT NULL,
-      updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_by  TEXT,
-      deleted     BOOLEAN     NOT NULL DEFAULT false,
-      PRIMARY KEY (collection, id)
-    )`;
-  await sql`
-    CREATE TABLE IF NOT EXISTS settings (
-      key   TEXT PRIMARY KEY,
-      value JSONB NOT NULL
-    )`;
+      collection TEXT NOT NULL, id TEXT NOT NULL, data JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_by TEXT,
+      deleted BOOLEAN NOT NULL DEFAULT false,
+      PRIMARY KEY (collection, id))`;
+  await sql`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value JSONB NOT NULL)`;
   await sql`
     CREATE TABLE IF NOT EXISTS users (
-      username    TEXT PRIMARY KEY,
-      full_name   TEXT NOT NULL,
-      role        TEXT NOT NULL DEFAULT 'maintenance',
-      salt        TEXT NOT NULL,
-      hash        TEXT NOT NULL,
-      active      BOOLEAN NOT NULL DEFAULT true,
-      must_change BOOLEAN NOT NULL DEFAULT false,
-      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-      last_login  TIMESTAMPTZ
-    )`;
+      username TEXT PRIMARY KEY, full_name TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'maintenance', salt TEXT NOT NULL, hash TEXT NOT NULL,
+      active BOOLEAN NOT NULL DEFAULT true, must_change BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(), last_login TIMESTAMPTZ)`;
   await sql`
     CREATE TABLE IF NOT EXISTS sessions (
-      token      TEXT PRIMARY KEY,
-      username   TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      expires_at TIMESTAMPTZ NOT NULL
-    )`;
+      token TEXT PRIMARY KEY, username TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(), expires_at TIMESTAMPTZ NOT NULL)`;
   await sql`CREATE INDEX IF NOT EXISTS records_updated_idx ON records (updated_at DESC)`;
   ready = true;
 }
@@ -132,7 +102,6 @@ async function ensureFoundingAdmin(sql) {
   return true;
 }
 
-/* ---------- session ---------- */
 async function currentUser(sql, req) {
   const token = req.headers['x-session'] || '';
   if (!token) return null;
@@ -182,36 +151,27 @@ function cleanRecord(rec) {
   return copy;
 }
 
-/* ---------- handler ---------- */
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'application/json');
 
   /* Unauthenticated health check — reports what is configured, never values. */
   if (req.method === 'GET' && req.query && req.query.diag) {
-    const out = {
-      ok: true, node: process.version,
+    const out = { ok: true, node: process.version,
       hasDatabaseUrl: !!process.env.DATABASE_URL,
       hasAdminUsername: !!process.env.ADMIN_USERNAME,
       hasAdminPassword: !!process.env.ADMIN_PASSWORD,
-      driverLoads: false, databaseReachable: false, tablesReady: false, userCount: null
-    };
+      driverLoads: false, databaseReachable: false, tablesReady: false, userCount: null };
     try {
-      await getNeon();
-      out.driverLoads = true;
+      await getNeon(); out.driverLoads = true;
       const sql = await connect();
       const ping = await sql`SELECT 1 AS ok`;
       out.databaseReachable = ping.length === 1;
-      await ensureSchema(sql);
-      out.tablesReady = true;
+      await ensureSchema(sql); out.tablesReady = true;
       await ensureFoundingAdmin(sql);
       const c = await sql`SELECT COUNT(*)::int AS n FROM users`;
       out.userCount = c[0].n;
-    } catch (e) {
-      out.ok = false;
-      out.error = e.message;
-      out.errorCode = e.code || null;
-    }
+    } catch (e) { out.ok = false; out.error = e.message; out.errorCode = e.code || null; }
     return res.status(200).json(out);
   }
 
@@ -227,7 +187,6 @@ export default async function handler(req, res) {
   const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
 
   try {
-    /* ===== public: sign in ===== */
     if (req.method === 'POST' && body.op === 'login') {
       const username = String(body.username || '').trim().toLowerCase();
       const password = String(body.password || '');
@@ -238,16 +197,13 @@ export default async function handler(req, res) {
       const u = rows[0];
       if (!u.active) return res.status(403).json({ error: 'That account has been deactivated' });
       if (!passwordMatches(password, u.salt, u.hash)) return fail();
-
       const token = newToken();
       const expires = new Date(Date.now() + SESSION_DAYS * 86400000).toISOString();
       await sql`INSERT INTO sessions (token, username, expires_at) VALUES (${token}, ${username}, ${expires})`;
       await sql`UPDATE users SET last_login = now() WHERE username = ${username}`;
       await sql`DELETE FROM sessions WHERE expires_at < now()`;
-      return res.status(200).json({
-        ok: true, token,
-        user: { username: u.username, name: u.full_name, role: u.role, mustChange: u.must_change }
-      });
+      return res.status(200).json({ ok: true, token,
+        user: { username: u.username, name: u.full_name, role: u.role, mustChange: u.must_change } });
     }
 
     const me = await currentUser(sql, req);
@@ -256,25 +212,20 @@ export default async function handler(req, res) {
     if (req.method === 'GET') {
       if (req.query.rev) return res.status(200).json({ rev: await revision(sql) });
       if (req.query.me) return res.status(200).json({ user: me });
-
       /* People list for assignment dropdowns. Any signed-in user may read it
-         — a technician has to be able to assign work to a colleague. Returns
-         only names and roles: no salts, hashes, or login history. */
+         — a technician has to be able to assign work to a colleague. Names
+         and roles only: no salts, hashes, or login history. */
       if (req.query.people) {
         const rows = await sql`
           SELECT username, full_name, role FROM users WHERE active = true ORDER BY full_name`;
         return res.status(200).json({ people: rows });
       }
-
-      /* Full account list, including inactive and last-login. Admins only. */
       if (req.query.users) {
         if (!isAdmin(me)) return res.status(403).json({ error: 'Admins only' });
         const rows = await sql`
-          SELECT username, full_name, role, active, created_at, last_login
-          FROM users ORDER BY full_name`;
+          SELECT username, full_name, role, active, created_at, last_login FROM users ORDER BY full_name`;
         return res.status(200).json({ users: rows });
       }
-
       const data = await readAll(sql);
       data.user = me;
       return res.status(200).json(data);
@@ -285,14 +236,12 @@ export default async function handler(req, res) {
       const who = me.name;
 
       if (op === 'logout') {
-        const token = req.headers['x-session'] || '';
-        await sql`DELETE FROM sessions WHERE token = ${String(token)}`;
+        await sql`DELETE FROM sessions WHERE token = ${String(req.headers['x-session'] || '')}`;
         return res.status(200).json({ ok: true });
       }
 
       if (op === 'changePassword') {
-        const current = String(body.current || '');
-        const next = String(body.next || '');
+        const current = String(body.current || ''), next = String(body.next || '');
         if (next.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
         const rows = await sql`SELECT * FROM users WHERE username = ${me.username}`;
         const u = rows[0];
@@ -300,8 +249,7 @@ export default async function handler(req, res) {
           return res.status(401).json({ error: 'Your current password is not correct' });
         const { salt, hash } = hashPassword(next);
         await sql`UPDATE users SET salt = ${salt}, hash = ${hash}, must_change = false WHERE username = ${me.username}`;
-        const token = req.headers['x-session'] || '';
-        await sql`DELETE FROM sessions WHERE username = ${me.username} AND token <> ${String(token)}`;
+        await sql`DELETE FROM sessions WHERE username = ${me.username} AND token <> ${String(req.headers['x-session'] || '')}`;
         return res.status(200).json({ ok: true });
       }
 
@@ -399,10 +347,8 @@ export default async function handler(req, res) {
         const username = String(body.username || '').trim().toLowerCase();
         const rows = await sql`SELECT * FROM users WHERE username = ${username}`;
         if (!rows.length) return res.status(404).json({ error: 'No such user' });
-
         if (body.name !== undefined)
           await sql`UPDATE users SET full_name = ${String(body.name).trim()} WHERE username = ${username}`;
-
         if (body.role !== undefined && ROLES.includes(body.role)) {
           /* Never let the last admin be demoted — it would lock everyone out. */
           if (rows[0].role === 'admin' && body.role !== 'admin') {
@@ -433,7 +379,6 @@ export default async function handler(req, res) {
 
     res.setHeader('Allow', 'GET, POST');
     return res.status(405).json({ error: 'Method not allowed' });
-
   } catch (e) {
     return res.status(500).json({ error: e.message || 'Database error' });
   }
