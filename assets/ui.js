@@ -28,7 +28,6 @@ function docLink(url,label,opts={}){
   return `<a class="${cls}" href="${esc(safe)}" target="_blank" rel="noopener noreferrer"
     onclick="event.stopPropagation()">${icon} ${esc(label||'Open document')} &#8599;</a>`;
 }
-
 let _toastT;
 function toast(msg){
   const e=document.getElementById('toast');
@@ -37,7 +36,6 @@ function toast(msg){
   clearTimeout(_toastT);
   _toastT=setTimeout(()=>e.classList.remove('show'),3400);
 }
-
 const Modal={
   open({title,body,footer}){
     document.getElementById('drawerTitle').textContent=title;
@@ -54,7 +52,6 @@ const Modal={
   }
 };
 document.addEventListener('keydown',e=>{if(e.key==='Escape')Modal.close();});
-
 const F={
   text(name,label,val,opts={}){
     return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
@@ -65,10 +62,13 @@ const F={
       ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
   num(name,label,val,opts={}){
     return `<label for="f_${name}">${esc(label)}</label>
-      <input id="f_${name}" name="${name}" type="number" step="${opts.step||'any'}" value="${esc(val??'')}"/>`;},
-  date(name,label,val){
-    return `<label for="f_${name}">${esc(label)}</label>
-      <input id="f_${name}" name="${name}" type="date" value="${esc(val??'')}"/>`;},
+      <input id="f_${name}" name="${name}" type="number" step="${opts.step||'any'}" value="${esc(val??'')}"
+        ${opts.placeholder?`placeholder="${esc(opts.placeholder)}"`:''}/>
+      ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
+  date(name,label,val,opts={}){
+    return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
+      <input id="f_${name}" name="${name}" type="date" value="${esc(val??'')}"/>
+      ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
   select(name,label,val,options,opts={}){
     const o=options.map(x=>{
       const v=typeof x==='string'?x:x.v,t=typeof x==='string'?x:x.t;
@@ -77,8 +77,6 @@ const F={
     return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
       <select id="f_${name}" name="${name}" ${opts.onchange?`onchange="${opts.onchange}"`:''}>${o}</select>
       ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
-  /* Person picker backed by real accounts, with free-text fallback so
-     an outside contractor can still be named. */
   person(name,label,val,opts={}){
     const names=DB.peopleNames(val);
     if(!names.length){
@@ -102,12 +100,10 @@ const F={
     document.querySelectorAll('#drawerBody [name]').forEach(el=>{out[el.name]=el.value.trim();});
     return out;}
 };
-
 function assetOptions(){
   return [{v:'',t:'— none —'}].concat(
     DB.all('assets').map(a=>({v:a.id,t:a.id+' · '+a.name})));
 }
-
 function renderTable(cols,rows,opts={}){
   if(!rows.length)return `<div class="empty">${esc(opts.empty||'Nothing here yet.')}</div>`;
   const head=cols.map(c=>
@@ -120,7 +116,6 @@ function renderTable(cols,rows,opts={}){
     return `<tr${click}>${tds}</tr>`;}).join('');
   return `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
-
 function fmtDate(iso){
   if(!iso)return '—';
   const d=new Date(iso+(String(iso).length===10?'T00:00:00':''));

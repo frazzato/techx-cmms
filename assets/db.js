@@ -2,12 +2,12 @@
    db.js — storage layer (cloud database + offline fallback)
    Reads served from an in-memory cache so screens render
    synchronously; writes go to the server in the background.
-   Offline, writes queue and flush on reconnect.
    ============================================================ */
 const DB = (() => {
   const KEY='techx.cmms.v1', TOKEN_KEY='techx.token', USER_KEY='techx.user',
         QUEUE_KEY='techx.queue', PEOPLE_KEY='techx.people', API='/api/data';
-  const EMPTY={assets:[],pms:[],parts:[],wos:[],meta:{site:'IAC Cottondale, AL',recentAssets:[]}};
+  const EMPTY={assets:[],pms:[],parts:[],wos:[],pmlogs:[],
+    meta:{site:'IAC Cottondale, AL',recentAssets:[]}};
   let cache=null,mode='local',lastRev=null,queue=[],onChange=null,lastError='',me=null,people=[];
 
   function loadLocal(){
@@ -16,6 +16,7 @@ const DB = (() => {
       cache=Object.assign({},structuredClone(EMPTY),raw?JSON.parse(raw):{});
       if(!cache.meta)cache.meta=structuredClone(EMPTY.meta);
       if(!Array.isArray(cache.meta.recentAssets))cache.meta.recentAssets=[];
+      if(!Array.isArray(cache.pmlogs))cache.pmlogs=[];
     }catch(e){cache=structuredClone(EMPTY);}
     return cache;}
   function saveLocal(){try{localStorage.setItem(KEY,JSON.stringify(cache));}catch(e){}}
@@ -72,6 +73,7 @@ const DB = (() => {
     try{payload=text?JSON.parse(text):null;}catch(e){}
     if(res.status===401){const e=new Error((payload&&payload.error)||'Please sign in');e.auth=true;throw e;}
     if(res.status===403){const e=new Error((payload&&payload.error)||'Not allowed');e.forbidden=true;throw e;}
+    if(res.status===409){const e=new Error((payload&&payload.error)||'Conflict');e.conflict=true;throw e;}
     if(!res.ok){
       if(payload&&payload.error)throw new Error(payload.error);
       const e=new Error('The server did not respond properly (HTTP '+res.status+
@@ -103,8 +105,8 @@ const DB = (() => {
       lastError='';
     }catch(e){
       if(e.auth){mode='local';lastError='Signed out';}
-      else if(e.forbidden){
-        /* Refused on permissions — never queue, it would fail forever. */
+      else if(e.forbidden||e.conflict){
+        /* Refused on rules — never queue, it would fail forever. */
         lastError=e.message;
         try{await refresh();}catch(err){}
         if(typeof toast==='function')toast(e.message);
@@ -117,7 +119,7 @@ const DB = (() => {
     let sent=0;
     for(const op of pending){
       try{await api('POST',op);sent++;}
-      catch(e){if(e.forbidden)continue;queue.push(op);saveQueue();throw e;}}
+      catch(e){if(e.forbidden||e.conflict)continue;queue.push(op);saveQueue();throw e;}}
     return{sent};}
 
   async function connect(){
@@ -137,7 +139,7 @@ const DB = (() => {
   function applyServer(data){
     const localMeta=(cache&&cache.meta)||{};
     cache={assets:data.assets||[],pms:data.pms||[],parts:data.parts||[],wos:data.wos||[],
-      /* recentAssets is a per-device convenience, never shared */
+      pmlogs:data.pmlogs||[],
       meta:Object.assign({},data.meta||{},{recentAssets:localMeta.recentAssets||[]})};
     lastRev=data.rev||lastRev;saveLocal();}
 
@@ -161,15 +163,16 @@ const DB = (() => {
   const updateUser=u=>api('POST',Object.assign({op:'updateUser'},u));
 
   function nextId(collection,prefix,pad=4){
-    const nums=load()[collection].map(r=>String(r.id||''))
+    const nums=(load()[collection]||[]).map(r=>String(r.id||''))
       .map(s=>parseInt(String(s).replace(/\D/g,''),10)).filter(n=>!isNaN(n));
     return prefix+String((nums.length?Math.max(...nums):1000)+1).padStart(pad,'0');}
 
-  function all(c){return load()[c].slice();}
-  function get(c,id){return load()[c].find(r=>r.id===id)||null;}
+  function all(c){return (load()[c]||[]).slice();}
+  function get(c,id){return (load()[c]||[]).find(r=>r.id===id)||null;}
 
   function upsert(c,rec){
     const db=load();
+    if(!db[c])db[c]=[];
     const i=db[c].findIndex(r=>r.id===rec.id);
     rec.updatedAt=new Date().toISOString();
     if(i>=0)db[c][i]=Object.assign({},db[c][i],rec);
@@ -181,12 +184,13 @@ const DB = (() => {
 
   function remove(c,id){
     const db=load();
-    db[c]=db[c].filter(r=>r.id!==id);
+    db[c]=(db[c]||[]).filter(r=>r.id!==id);
     saveLocal();
     push({op:'remove',collection:c,id});}
 
   function bulkUpsert(c,rows,keyField='id'){
     const db=load();
+    if(!db[c])db[c]=[];
     let added=0,updated=0;const merged=[];
     rows.forEach(r=>{
       const i=db[c].findIndex(x=>x[keyField]&&x[keyField]===r[keyField]);
@@ -199,6 +203,7 @@ const DB = (() => {
   function replaceAll(obj){
     cache=Object.assign(structuredClone(EMPTY),obj);
     if(!Array.isArray(cache.meta.recentAssets))cache.meta.recentAssets=[];
+    if(!Array.isArray(cache.pmlogs))cache.pmlogs=[];
     saveLocal();}
   function reset(){cache=structuredClone(EMPTY);saveLocal();}
   function raw(){return load();}
@@ -214,7 +219,7 @@ const DB = (() => {
     const meta=Object.assign({},db.meta);
     delete meta.recentAssets;
     const r=await api('POST',{op:'seed',
-      payload:{assets:db.assets,pms:db.pms,parts:db.parts,wos:db.wos,meta}});
+      payload:{assets:db.assets,pms:db.pms,parts:db.parts,wos:db.wos,pmlogs:db.pmlogs,meta}});
     await refresh();return r;}
 
   function touchAsset(id){

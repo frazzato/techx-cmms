@@ -21,7 +21,15 @@ const CSV = (() => {
     const headers=rows[0].map(h=>h.trim());
     const records=rows.slice(1).map(r=>{const o={};headers.forEach((h,i)=>{o[h]=(r[i]||'').trim();});return o;});
     return{headers,records};}
-  function esc(v){const s=v===null||v===undefined?'':String(v);
+  /* Excel and Sheets execute a cell that begins with = + - or @, so a
+     technician's note reading "=cmd|..." would run when an auditor opens
+     the export. Prefixing with a single quote renders it as plain text.
+     This matters more here than usual: the compliance export is written
+     to be opened by someone outside the maintenance team. */
+  function neutralise(s){
+    return /^[=+\-@\t\r]/.test(s) ? "'"+s : s;}
+  function esc(v){
+    const s=neutralise(v===null||v===undefined?'':String(v));
     return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}
   function build(headers,rows){
     return headers.map(h=>esc(h)).join(',')+'\n'+
@@ -83,7 +91,21 @@ const CSV = (() => {
       cause:['causeoffailure','cause','rootcause','failurecause'],
       partsUsed:['partsneeded','partsused','parts'],
       docUrl:['document','documenturl','documentlink','reference','referencelink','attachment','attachmenturl'],
-      status:['status','state'],notes:['notes','technotes','remarks','comments','workperformed','repairdetails']}};
+      status:['status','state'],notes:['notes','technotes','remarks','comments','workperformed','repairdetails']},
+    /* Historical PM completions can be imported from an old spreadsheet,
+       which is how you get compliance history for work done before this
+       system existed. */
+    pmlogs:{id:['id','recordid','logid'],
+      pmId:['pmnumber','pmid','pm','pmno'],
+      assetId:['assetid','asset','assetnumber','equipmentid'],
+      description:['task','description','pmdescription','work'],
+      frequency:['frequency','freq','interval'],
+      dueDate:['duedate','due','scheduleddate','datedue'],
+      doneDate:['completeddate','datecompleted','completed','donedate','date'],
+      by:['completedby','by','technician','who','performedby'],
+      hours:['hours','laborhours','time'],
+      notes:['notes','comments','remarks','findings'],
+      woId:['workorder','workordernumber','wo','wonumber']}};
   function mapHeaders(entity,headers){
     const alias=ALIAS[entity];const map={};
     headers.forEach(h=>{const n=norm(h);
