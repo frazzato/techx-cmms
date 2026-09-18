@@ -20,7 +20,7 @@
    same time would clobber each other. An audit trail cannot work
    that way. One row per completion, never updated.
 
-   Stoppages are NOT append-only — an open stoppage has to be
+   Stoppages are NOT append-only — an open stoppage must stay
    editable so somebody can close it when the machine runs again.
    ============================================================ */
 
@@ -266,8 +266,7 @@ export default async function handler(req, res) {
         if (!COLLECTIONS.includes(collection)) return res.status(400).json({ error: 'Unknown collection' });
         if (!record || !record.id) return res.status(400).json({ error: 'Record needs an id' });
 
-        /* An audit record is written once and never rewritten. Silently
-           allowing an edit would make the whole history worthless. */
+        /* An audit record is written once and never rewritten. */
         if (APPEND_ONLY.includes(collection)) {
           const existing = await sql`
             SELECT 1 FROM records WHERE collection = ${collection} AND id = ${String(record.id)}`;
