@@ -1,7 +1,16 @@
 /* ============================================================
    insights.js — Smart Assist
-   Finds patterns in work orders already closed. No language
-   model: every line shown is a real work order you can open.
+   ------------------------------------------------------------
+   Finds patterns in what the plant has already recorded. No
+   language model: every line shown is a real record you can open.
+
+   It searches two sources now:
+     work orders  — repairs that were carried out
+     stoppages    — downtime and defects, and what got it running
+
+   A stoppage with "what fixed it" filled in is often the most
+   useful thing in the system, because it was written by someone
+   standing at the machine while it was still broken.
    ============================================================ */
 const Insights = (() => {
   const STOP = new Set([
@@ -20,7 +29,7 @@ const Insights = (() => {
     worn:'wear',wearing:'wear',wornout:'wear',
     noisy:'noise',noises:'noise',
     overheated:'overheat',overheating:'overheat',hot:'overheat',
-    jammed:'jam',jamming:'jam',jams:'jam',
+    jammed:'jam',jamming:'jam',jams:'jam',blockage:'jam',blocked:'jam',
     misaligned:'align',alignment:'align',aligned:'align',aligning:'align',
     loosened:'loose',loosening:'loose',looseness:'loose',
     vibrating:'vibration',vibrations:'vibration',vibrate:'vibration',
@@ -39,71 +48,129 @@ const Insights = (() => {
     pneumatic:'air',
     electrical:'electric',wiring:'electric',wire:'electric',
     hydraulics:'hydraulic',
-    drifting:'drift',drifted:'drift'
+    drifting:'drift',drifted:'drift',
+    stopped:'stop',stopping:'stop',stoppage:'stop',
+    downtime:'stop',dead:'stop'
   };
   function tokenize(text){
     return String(text||'').toLowerCase()
       .replace(/[^a-z0-9\s-]/g,' ').split(/[\s-]+/)
       .filter(w=>w.length>2&&!STOP.has(w)).map(w=>SYNONYM[w]||w);}
   function tokenSet(text){return new Set(tokenize(text));}
-  function buildIdf(wos){
+
+  /* Text that describes a record, whatever kind it is. */
+  const woText=w=>(w.description||'')+' '+(w.notes||'');
+  const stopText=s=>(s.reason||'')+' '+(s.detail||'')+' '+(s.fixedBy||'');
+
+  function buildIdf(docs){
     const docFreq=new Map();
-    wos.forEach(w=>{
-      const seen=tokenSet((w.description||'')+' '+(w.notes||''));
-      seen.forEach(t=>docFreq.set(t,(docFreq.get(t)||0)+1));});
-    const n=Math.max(wos.length,1);
+    docs.forEach(text=>{
+      tokenSet(text).forEach(t=>docFreq.set(t,(docFreq.get(t)||0)+1));});
+    const n=Math.max(docs.length,1);
     return t=>Math.log((n+1)/((docFreq.get(t)||0)+1))+1;}
   function weightedOverlap(aSet,bSet,idf){
     let shared=0,total=0,best=0;
     aSet.forEach(t=>{const w=idf(t);total+=w;
       if(bSet.has(t)){shared+=w;if(w>best)best=w;}});
     return{ratio:total>0?shared/total:0,best};}
+
   /* Below MIN_CORPUS there is not enough history for word-rarity to
      mean anything, so judge on overlap alone. */
   const DISTINCTIVE=1.5, MIN_CORPUS=4;
 
+  /* Machines of the same make and model tend to fail the same way. */
+  function sameModelSet(assetId){
+    const asset=DB.get('assets',assetId);
+    if(!asset||!asset.model)return new Set();
+    return new Set(DB.all('assets').filter(a=>a.id!==assetId&&a.model&&a.model===asset.model&&
+      a.manufacturer===asset.manufacturer).map(a=>a.id));}
+
+  function ageDaysOf(dateish){
+    if(!dateish)return null;
+    const d=new Date(String(dateish).slice(0,10)+'T00:00:00');
+    if(isNaN(d))return null;
+    return Math.round((new Date()-d)/86400000);}
+
+  /* ---------- work orders ---------- */
   function similarRepairs(opts={}){
     const {assetId='',description='',cause='',excludeId='',limit=5}=opts;
     const done=DB.all('wos').filter(w=>DB.isDone(w)&&w.id!==excludeId&&(w.description||w.notes));
     if(!done.length)return[];
-    const idf=buildIdf(DB.all('wos'));
+    const idf=buildIdf(DB.all('wos').map(woText));
     const canDiscriminate=done.length>=MIN_CORPUS;
     const qSet=tokenSet(description);
-    const asset=DB.get('assets',assetId);
-    const sameModel=asset&&asset.model
-      ? new Set(DB.all('assets').filter(a=>a.id!==assetId&&a.model&&a.model===asset.model&&
-          a.manufacturer===asset.manufacturer).map(a=>a.id))
-      : new Set();
-    const today=new Date();
+    const sameModel=sameModelSet(assetId);
     const scored=done.map(w=>{
-      const wSet=tokenSet((w.description||'')+' '+(w.notes||''));
+      const wSet=tokenSet(woText(w));
       const ov=qSet.size?weightedOverlap(qSet,wSet,idf):{ratio:0,best:0};
-      const overlap=ov.ratio;
-      let score=overlap*100;
+      let score=ov.ratio*100;
       const reasons=[];
       const distinct=!canDiscriminate||ov.best>=DISTINCTIVE;
-      if(overlap>0.15&&distinct)reasons.push('similar wording');
+      if(ov.ratio>0.15&&distinct)reasons.push('similar wording');
       if(w.assetId&&w.assetId===assetId){score+=45;reasons.push('same machine');}
       else if(sameModel.has(w.assetId)){score+=22;reasons.push('same model');}
       if(cause&&cause!=='To be determined'&&w.cause===cause){score+=30;reasons.push('same cause');}
-      const when=w.dateCompleted||w.dateRequested;
-      let ageDays=null;
-      if(when){
-        const d=new Date(when+'T00:00:00');
-        if(!isNaN(d)){
-          ageDays=Math.round((today-d)/86400000);
-          if(ageDays<=30)score+=8;else if(ageDays<=180)score+=4;else if(ageDays>730)score-=6;}}
+      const ageDays=ageDaysOf(w.dateCompleted||w.dateRequested);
+      if(ageDays!==null){
+        if(ageDays<=30)score+=8;else if(ageDays<=180)score+=4;else if(ageDays>730)score-=6;}
       if(w.notes&&w.notes.trim().length>15){score+=10;reasons.push('has notes');}
-      return{wo:w,score,reasons,ageDays,overlap,bestShared:ov.best};});
+      return{source:'wo',wo:w,score,reasons,ageDays,overlap:ov.ratio,bestShared:ov.best};});
     const described=qSet.size>0;
-    const MIN_OVERLAP=0.10;
     return scored.filter(s=>{
       if(s.score<25)return false;
       if(!described)return true;
-      const wordMatch=s.overlap>=MIN_OVERLAP&&(!canDiscriminate||s.bestShared>=DISTINCTIVE);
+      const wordMatch=s.overlap>=0.10&&(!canDiscriminate||s.bestShared>=DISTINCTIVE);
       const causeMatch=cause&&cause!=='To be determined'&&s.wo.cause===cause;
       return wordMatch||causeMatch;
     }).sort((a,b)=>b.score-a.score).slice(0,limit);}
+
+  /* ---------- stoppages ----------
+     Only closed records with a real "what fixed it" are offered. An
+     open stoppage has no lesson yet, and one closed without a fix
+     note teaches nobody anything. */
+  function similarStops(opts={}){
+    const {assetId='',description='',reason='',excludeId='',limit=5}=opts;
+    const src=typeof Stops!=='undefined'?Stops.all():DB.all('stops');
+    const usable=src.filter(s=>s.id!==excludeId&&s.endedAt&&
+      s.fixedBy&&s.fixedBy.trim().length>=5);
+    if(!usable.length)return[];
+    const idf=buildIdf(src.map(stopText));
+    const canDiscriminate=usable.length>=MIN_CORPUS;
+    const qSet=tokenSet(description+' '+reason);
+    const sameModel=sameModelSet(assetId);
+    const scored=usable.map(s=>{
+      const sSet=tokenSet(stopText(s));
+      const ov=qSet.size?weightedOverlap(qSet,sSet,idf):{ratio:0,best:0};
+      let score=ov.ratio*100;
+      const reasons=[];
+      const distinct=!canDiscriminate||ov.best>=DISTINCTIVE;
+      if(ov.ratio>0.15&&distinct)reasons.push('similar wording');
+      if(s.assetId&&s.assetId===assetId){score+=45;reasons.push('same machine');}
+      else if(sameModel.has(s.assetId)){score+=22;reasons.push('same model');}
+      if(reason&&s.reason===reason){score+=35;reasons.push('same reason');}
+      const ageDays=ageDaysOf(s.startedAt);
+      if(ageDays!==null){
+        if(ageDays<=30)score+=8;else if(ageDays<=180)score+=4;else if(ageDays>730)score-=6;}
+      score+=10; /* it has a fix note by definition */
+      return{source:'stop',stop:s,score,reasons,ageDays,overlap:ov.ratio,bestShared:ov.best};});
+    const described=qSet.size>0;
+    return scored.filter(s=>{
+      if(s.score<25)return false;
+      if(!described)return true;
+      const wordMatch=s.overlap>=0.10&&(!canDiscriminate||s.bestShared>=DISTINCTIVE);
+      const reasonMatch=reason&&s.stop.reason===reason;
+      return wordMatch||reasonMatch;
+    }).sort((a,b)=>b.score-a.score).slice(0,limit);}
+
+  /* ---------- everything, merged ----------
+     One ranked list across both sources. A technician does not care
+     whether the answer came from a work order or a downtime record,
+     only whether someone has solved this before. */
+  function findLessons(opts={}){
+    const limit=opts.limit||8;
+    const wos=similarRepairs(Object.assign({},opts,{limit}));
+    const stops=similarStops(Object.assign({},opts,{limit}));
+    return wos.concat(stops).sort((a,b)=>b.score-a.score).slice(0,limit);}
 
   function repeatFailures(opts={}){
     const {windowDays=365,minCount=3}=opts;
@@ -161,14 +228,20 @@ const Insights = (() => {
       meanGap,topPeople,undocumented,
       lastRepair:dates.length?dates[dates.length-1].toISOString().slice(0,10):''};}
 
+  /* Documentation health across both sources — this is what decides
+     whether any of the above is worth reading. */
   function dataQuality(){
     const done=DB.all('wos').filter(DB.isDone);
-    const noCause=done.filter(w=>!w.cause||w.cause==='To be determined').length;
     const noNotes=done.filter(w=>!w.notes||w.notes.trim().length<15).length;
-    const usable=done.filter(w=>w.cause&&w.cause!=='To be determined'&&
+    const usableWo=done.filter(w=>w.cause&&w.cause!=='To be determined'&&
       w.notes&&w.notes.trim().length>=15).length;
-    return{done:done.length,noCause,noNotes,usable,
-      pct:done.length?Math.round((usable/done.length)*100):0};}
+    const closedStops=DB.all('stops').filter(s=>s.endedAt);
+    const usableStop=closedStops.filter(s=>s.fixedBy&&s.fixedBy.trim().length>=5).length;
+    const total=done.length+closedStops.length;
+    const usable=usableWo+usableStop;
+    return{done:done.length,noNotes,usable,total,
+      stops:closedStops.length,stopsDocumented:usableStop,
+      pct:total?Math.round((usable/total)*100):0};}
 
   function ago(days){
     if(days===null||days===undefined)return '';
@@ -180,6 +253,6 @@ const Insights = (() => {
     if(days<730)return Math.round(days/30)+' months ago';
     return Math.round(days/365)+' years ago';}
 
-  return{similarRepairs,repeatFailures,assetHealth,dataQuality,ago,tokenize};
+  return{similarRepairs,similarStops,findLessons,repeatFailures,assetHealth,dataQuality,ago,tokenize};
 })();
 if (typeof module !== 'undefined') module.exports = Insights;

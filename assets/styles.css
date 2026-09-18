@@ -88,6 +88,57 @@ h3.sec{font-size:12.5px;font-weight:500;color:var(--muted);letter-spacing:.6px;
 .loginbox h1{font-size:23px;font-weight:500;margin:0 0 4px;text-align:center}
 .loginbox p.sub{text-align:center;margin-bottom:18px}
 
+/* ---------- the two big entry points ---------- */
+.bigactions{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-bottom:22px}
+.bigaction{display:flex;align-items:center;gap:16px;text-align:left;
+  background:var(--pri);color:#fff;border:none;border-radius:var(--r);
+  padding:20px 22px;cursor:pointer;box-shadow:var(--sh);transition:.15s;
+  font-size:14px;text-decoration:none}
+.bigaction:hover{box-shadow:var(--sh2);transform:translateY(-1px)}
+.bigaction.bad{background:var(--bad)}
+.bigaction.ghost{background:var(--surf);color:var(--ink);border:2px solid var(--pur-c)}
+.bigaction .ba-ic{font-size:30px;line-height:1;flex-shrink:0}
+.bigaction .ba-txt{display:flex;flex-direction:column;gap:3px;min-width:0}
+.bigaction .ba-txt b{font-size:17px;font-weight:600}
+.bigaction .ba-txt span{font-size:12.5px;opacity:.9}
+.bigaction.ghost .ba-txt span{color:var(--muted)}
+
+/* ---------- chooser ---------- */
+.chooser{display:flex;flex-direction:column;gap:12px;margin-top:6px}
+.choice{display:flex;align-items:center;gap:16px;text-align:left;width:100%;
+  background:var(--surf-1);border:2px solid var(--line);border-radius:var(--r);
+  padding:18px;cursor:pointer;transition:.13s}
+.choice:hover{border-color:var(--pri);background:#fff;box-shadow:var(--sh)}
+.choice-ic{width:52px;height:52px;border-radius:15px;display:grid;place-items:center;
+  font-size:24px;flex-shrink:0}
+.ic-wo{background:var(--info-c);color:var(--pri)}
+.ic-pm{background:var(--pur-c);color:var(--pur)}
+.ic-down{background:var(--bad-c);color:var(--bad)}
+.ic-def{background:var(--warn-c);color:var(--warn)}
+.choice-txt{display:flex;flex-direction:column;gap:4px;min-width:0}
+.choice-txt b{font-size:16px;font-weight:600}
+.choice-txt span{font-size:12.5px;color:var(--muted);line-height:1.5}
+
+/* ---------- machines down banner ---------- */
+.downbanner{background:var(--bad-c);border:2px solid var(--bad);border-radius:var(--r);
+  padding:16px 18px;margin-bottom:18px}
+.downbanner-hd{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  color:var(--bad);font-size:15px;margin-bottom:12px}
+.pulse{width:10px;height:10px;border-radius:50%;background:var(--bad);flex-shrink:0;
+  animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(1.25)}}
+.downlist{display:flex;flex-direction:column;gap:8px}
+.downrow{display:flex;align-items:center;gap:12px;background:#fff;border-radius:var(--r-s);
+  padding:11px 14px;flex-wrap:wrap}
+.downrow.stale{border:1px dashed var(--bad)}
+.downrow-txt{flex:1;min-width:180px;cursor:pointer;line-height:1.5}
+.downrow-txt b{display:block;font-size:14px}
+.downrow-txt span{font-size:12.5px;color:var(--muted)}
+
+/* ---------- quick time buttons ---------- */
+.quicktime{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+.quicktime .fchip{font-size:12.5px;padding:8px 14px}
+
 /* ---------- home tiles ---------- */
 .hub{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-bottom:22px}
 .tile{background:var(--surf);border-radius:var(--r);padding:24px;box-shadow:var(--sh);
@@ -104,7 +155,7 @@ h3.sec{font-size:12.5px;font-weight:500;color:var(--muted);letter-spacing:.6px;
   padding:7px 14px;font-size:13px;margin:0 8px 8px 0;cursor:pointer;color:inherit}
 .pill:hover{background:var(--pri-cont);border-color:var(--pri-cont)}
 
-/* ---------- asset header ---------- */
+/* ---------- equipment header ---------- */
 .ahead{background:var(--surf);border-radius:var(--r);padding:22px;box-shadow:var(--sh);
   margin-bottom:18px;display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
 .ahead .big{width:60px;height:60px;border-radius:16px;background:var(--pri-cont);
@@ -149,7 +200,7 @@ td.num{text-align:right;font-family:"Roboto Mono",monospace}
 .btn.tonal{background:var(--pri-cont);color:var(--on-pri-cont)}
 .btn.out{background:none;border:1px solid var(--line);color:var(--pri)}
 .btn.ok{background:var(--ok);color:#fff}
-.btn.bad{background:none;border:1px solid var(--bad);color:var(--bad)}
+.btn.bad{background:var(--bad);color:#fff}
 .btn.sm{padding:7px 15px;font-size:12.5px}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;align-items:center}
@@ -244,6 +295,7 @@ input[readonly]{background:var(--surf-2)}
 .ev-hold{background:var(--surf-3);color:var(--muted)}
 .ev-pm{background:var(--pur-c);color:var(--pur)}
 .ev-pmdone{background:#d7f0dd;color:var(--ok);font-weight:500}
+.ev-stop{background:#ffd9d6;color:var(--bad);font-weight:600}
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:14px;font-size:12px;color:var(--muted)}
 .legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 
@@ -290,7 +342,7 @@ input[readonly]{background:var(--surf-2)}
 .qrfail span{color:var(--muted)}
 
 @media print{
-  .appbar,.rail,.hide-print,.chipset,h1.page,p.sub{display:none!important}
+  .appbar,.rail,.hide-print,.chipset,h1.page,p.sub,.downbanner,.bigactions{display:none!important}
   body{background:#fff}
   .shell{display:block}
   .content{padding:0;max-width:none}
@@ -326,4 +378,9 @@ input[readonly]{background:var(--surf-2)}
   .tagsheet{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
   .hit-who,.pmlog-by{margin-left:0}
   .hit-why{display:none}
+  .bigaction{padding:16px 18px}
+  .bigaction .ba-ic{font-size:26px}
+  .bigaction .ba-txt b{font-size:15px}
+  .downrow{padding:10px 12px}
+  .downrow .btn{width:100%}
 }

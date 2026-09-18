@@ -1,12 +1,15 @@
 /* ============================================================
    db.js — storage layer (cloud database + offline fallback)
-   Reads served from an in-memory cache so screens render
-   synchronously; writes go to the server in the background.
+   ------------------------------------------------------------
+   NOTE ON NAMING: the user-facing word is "Equipment", but the
+   stored collection is still called "assets". Renaming the key
+   would orphan every record already in the database for no
+   functional gain, so the label changed and the storage did not.
    ============================================================ */
 const DB = (() => {
   const KEY='techx.cmms.v1', TOKEN_KEY='techx.token', USER_KEY='techx.user',
         QUEUE_KEY='techx.queue', PEOPLE_KEY='techx.people', API='/api/data';
-  const EMPTY={assets:[],pms:[],parts:[],wos:[],pmlogs:[],
+  const EMPTY={assets:[],pms:[],parts:[],wos:[],pmlogs:[],stops:[],
     meta:{site:'IAC Cottondale, AL',recentAssets:[]}};
   let cache=null,mode='local',lastRev=null,queue=[],onChange=null,lastError='',me=null,people=[];
 
@@ -16,7 +19,7 @@ const DB = (() => {
       cache=Object.assign({},structuredClone(EMPTY),raw?JSON.parse(raw):{});
       if(!cache.meta)cache.meta=structuredClone(EMPTY.meta);
       if(!Array.isArray(cache.meta.recentAssets))cache.meta.recentAssets=[];
-      if(!Array.isArray(cache.pmlogs))cache.pmlogs=[];
+      ['pmlogs','stops'].forEach(k=>{if(!Array.isArray(cache[k]))cache[k]=[];});
     }catch(e){cache=structuredClone(EMPTY);}
     return cache;}
   function saveLocal(){try{localStorage.setItem(KEY,JSON.stringify(cache));}catch(e){}}
@@ -39,7 +42,8 @@ const DB = (() => {
     if(!r)return false;
     if(r==='admin')return true;
     return ['view','createWO','editWO','completeWO','createPM','editPM','completePM',
-      'createPart','editPart','countPart','createAsset','editAsset'].includes(action);}
+      'createPart','editPart','countPart','createAsset','editAsset',
+      'createStop','editStop','closeStop'].includes(action);}
 
   function loadPeople(){
     if(people.length)return people;
@@ -139,7 +143,7 @@ const DB = (() => {
   function applyServer(data){
     const localMeta=(cache&&cache.meta)||{};
     cache={assets:data.assets||[],pms:data.pms||[],parts:data.parts||[],wos:data.wos||[],
-      pmlogs:data.pmlogs||[],
+      pmlogs:data.pmlogs||[],stops:data.stops||[],
       meta:Object.assign({},data.meta||{},{recentAssets:localMeta.recentAssets||[]})};
     lastRev=data.rev||lastRev;saveLocal();}
 
@@ -203,7 +207,7 @@ const DB = (() => {
   function replaceAll(obj){
     cache=Object.assign(structuredClone(EMPTY),obj);
     if(!Array.isArray(cache.meta.recentAssets))cache.meta.recentAssets=[];
-    if(!Array.isArray(cache.pmlogs))cache.pmlogs=[];
+    ['pmlogs','stops'].forEach(k=>{if(!Array.isArray(cache[k]))cache[k]=[];});
     saveLocal();}
   function reset(){cache=structuredClone(EMPTY);saveLocal();}
   function raw(){return load();}
@@ -219,7 +223,8 @@ const DB = (() => {
     const meta=Object.assign({},db.meta);
     delete meta.recentAssets;
     const r=await api('POST',{op:'seed',
-      payload:{assets:db.assets,pms:db.pms,parts:db.parts,wos:db.wos,pmlogs:db.pmlogs,meta}});
+      payload:{assets:db.assets,pms:db.pms,parts:db.parts,wos:db.wos,
+        pmlogs:db.pmlogs,stops:db.stops,meta}});
     await refresh();return r;}
 
   function touchAsset(id){

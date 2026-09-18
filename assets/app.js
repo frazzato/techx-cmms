@@ -1,6 +1,12 @@
 /* ============================================================
    app.js — router + screens
+
+   NAMING: the user-facing word is "Equipment" everywhere. The
+   stored collection is still "assets" and the route is still
+   #/asset/… — renaming those would orphan existing records and
+   break every QR tag already printed and stuck on a machine.
    ============================================================ */
+
 const FREQS = ['daily','weekly','biweekly','monthly','quarterly','semiannual','annually'];
 const WO_TYPES = ['Repair','Preventive','Improvement','Troubleshoot','Inspection'];
 const WO_STATUS = ['Open','In Progress','On Hold','Completed','Cancelled'];
@@ -13,10 +19,11 @@ const LINK_HINT = 'Paste a SharePoint or web address. Opens in a new tab — the
 let SEARCH='', WO_VIEW='list', WO_FILTER='all', PM_FILTER='all';
 let CAL={y:new Date().getFullYear(),m:new Date().getMonth(),pms:true};
 let USERS=[], SMART_Q='', SMART_ASSET='', COMP_DAYS=90, COMP_ASSET='';
+let STOP_DAYS=30, STOP_KIND='', STOP_ASSET='';
 
 const ROUTES={home:renderHome,dashboard:renderDashboard,assets:renderAssets,asset:renderAssetDetail,
   pm:renderPM,parts:renderParts,wo:renderWO,qr:renderQR,smart:renderSmart,compliance:renderCompliance,
-  import:renderImport,users:renderUsers,settings:renderSettings,login:renderLogin};
+  stops:renderStops,import:renderImport,users:renderUsers,settings:renderSettings,login:renderLogin};
 const ADMIN_ROUTES=['import','users'];
 
 function route(){
@@ -68,6 +75,9 @@ function updateChrome(){
   else{el.className='connchip warn';
     el.textContent=s.pending?'⚠ Offline · '+s.pending+' queued':'⚠ Offline';}}
 
+/* ============================================================
+   LOGIN
+   ============================================================ */
 function renderLogin(){
   return `<div class="loginwrap"><div class="card loginbox">
     <div class="mark big">TX</div>
@@ -163,178 +173,475 @@ function doChangePassword(){
     .catch(e=>show(e.message||'Could not change password'));}
 
 /* ============================================================
-   PM COMPLETION — the heart of the audit trail
+   THE TWO ENTRY POINTS
    ------------------------------------------------------------
-   Marking a PM done writes an immutable record, then rolls the
-   schedule forward. The record is written FIRST: if that fails we
-   must not advance the schedule, or the work looks done with
-   nothing to prove it.
+   A technician with a problem in front of them should not have to
+   know which menu it lives under. Two buttons, each asking one
+   plain question, then straight into the right form.
+
+   These choosers only appear where the decision has not been made
+   yet. The "+ New PM" button on the PM screen stays direct —
+   adding a choice step there would be a wasted tap.
    ============================================================ */
-function completePM(id){
-  const p=DB.get('pms',id);
-  if(!p){toast('That PM no longer exists');route();return;}
-  const due=p.nextDue||'';
-  const lateBy=due?Compliance.daysBetween(due,today()):null;
-  const next=DB.bumpDue(p);
-  Modal.open({title:'Complete '+p.id,
-    body:`<div class="pmhead">
-        <div class="pmhead-task">${esc(p.description||'PM '+p.id)}</div>
-        <div class="pmhead-meta">${esc(DB.assetName(p.assetId))} ·
-          ${esc(p.frequency||'')} ${due?'· was due '+fmtDate(due):''}</div></div>
-      ${lateBy!==null&&lateBy>Compliance.GRACE_DAYS?`<div class="note bad">
-        This is <b>${lateBy} days past due</b>. That is recorded as-is — the history is
-        only worth anything if it is honest.</div>`:''}
-      ${F.date('doneDate','Date completed',today(),{required:true,
-        hint:'Change this if the work was actually done on a different day.'})}
-      ${F.person('by','Completed by',DB.getWho(),{required:true,emptyLabel:'— select —'})}
-      ${F.num('hours','Hours taken','',{step:'0.25',placeholder:'e.g. 0.5'})}
-      ${F.area('notes','What you found','',3,{
-        placeholder:'e.g. Sonotrode faces clean, weld quality within spec, no action needed.',
-        hint:'Findings matter even when nothing was wrong — "checked, all normal" is a valid record.'})}
-      <div class="note">Saving writes a permanent completion record and moves the next due date to
-        <b>${fmtDate(next)}</b>. Completion records cannot be edited afterwards.</div>`,
-    footer:`<button class="btn ok" onclick="doCompletePM('${jsq(id)}')">Record completion</button>
+
+function openWorkChooser(presetAsset){
+  const a=presetAsset?`'${jsq(presetAsset)}'`:'';
+  Modal.open({
+    title:'What do you need to raise?',
+    body:`<div class="chooser">
+      <button class="choice" onclick="Modal.close();editWO(null,${a})">
+        <div class="choice-ic ic-wo">&#129534;</div>
+        <div class="choice-txt">
+          <b>Work Order</b>
+          <span>Something broke, needs fixing, or needs looking at</span>
+        </div>
+      </button>
+      <button class="choice" onclick="Modal.close();editPM(null,${a})">
+        <div class="choice-ic ic-pm">&#128197;</div>
+        <div class="choice-txt">
+          <b>Preventive Maintenance</b>
+          <span>A scheduled job that repeats on a frequency</span>
+        </div>
+      </button>
+    </div>
+    <div class="note">A work order happens once. A PM comes back every week,
+    month or quarter and builds a compliance record.</div>`,
+    footer:`<button class="btn out" onclick="Modal.close()">Cancel</button>`});}
+
+function openStopChooser(presetAsset){
+  const a=presetAsset?`'${jsq(presetAsset)}'`:'';
+  Modal.open({
+    title:'What happened?',
+    body:`<div class="chooser">
+      <button class="choice" onclick="Modal.close();reportStop('downtime',${a})">
+        <div class="choice-ic ic-down">&#9888;</div>
+        <div class="choice-txt">
+          <b>Downtime</b>
+          <span>The machine stopped — a fault, a jam, waiting on something</span>
+        </div>
+      </button>
+      <button class="choice" onclick="Modal.close();reportStop('defect',${a})">
+        <div class="choice-ic ic-def">&#128683;</div>
+        <div class="choice-txt">
+          <b>Defect</b>
+          <span>The machine ran but produced bad parts</span>
+        </div>
+      </button>
+    </div>
+    <div class="note">Both record how long production was lost. The only
+    difference is whether the machine failed or the process did.</div>`,
+    footer:`<button class="btn out" onclick="Modal.close()">Cancel</button>`});}
+
+/* ============================================================
+   DOWNTIME AND DEFECTS
+   ------------------------------------------------------------
+   Reporting has to be fast — the machine is down while the
+   technician is typing. Target is under 15 seconds: machine,
+   when it started, why, save.
+
+   Closing is the part that usually rots. If nobody closes a
+   record it stays open forever and every total becomes a lie,
+   so open stoppages get a permanent banner and a one-tap
+   "Running again".
+   ============================================================ */
+
+/* Quick "when did it start" buttons. Typing a time on a phone while
+   standing at a stopped machine is the slowest part of the form. */
+const STOP_QUICK = [
+  { mins: 0,   label: 'Just now' },
+  { mins: 15,  label: '15 min ago' },
+  { mins: 30,  label: '30 min ago' },
+  { mins: 60,  label: '1 hour ago' },
+  { mins: 120, label: '2 hours ago' }
+];
+
+function stopQuickTime(mins){
+  const el=document.getElementById('f_startedAt');
+  if(el)el.value=mins===0?Stops.nowLocal():Stops.minutesAgo(mins);
+  document.querySelectorAll('.quicktime .fchip').forEach(b=>b.classList.remove('on'));
+  const btn=document.getElementById('qt'+mins);
+  if(btn)btn.classList.add('on');
+  refreshStopLessons();}
+
+/* Live hint of what others did about this before — shown while the
+   form is still open, because that is when it is useful. */
+function refreshStopLessons(){
+  const box=document.getElementById('stopLessons');
+  if(!box)return;
+  const d=F.read();
+  const hits=Insights.similarStops({
+    assetId:d.assetId||'', reason:d.reason||'', description:d.detail||'', limit:3});
+  box.innerHTML=hits.length?`<div class="seenbefore">
+    <div class="seen-hd">&#128161; Fixed before — ${hits.length} time${hits.length===1?'':'s'}</div>
+    ${hits.map(stopCard).join('')}</div>`:'';}
+
+function reportStop(kind,presetAsset){
+  const k=Stops.KINDS[kind]||Stops.KINDS.downtime;
+  Modal.open({
+    title:k.label+' — what happened?',
+    body:`
+      ${F.select('assetId','Equipment',presetAsset||'',assetOptions(),
+        {required:true,onchange:'refreshStopLessons()'})}
+
+      <label class="req">When did it start?</label>
+      <div class="quicktime">
+        ${STOP_QUICK.map(q=>`<button type="button" id="qt${q.mins}"
+          class="fchip ${q.mins===0?'on':''}" onclick="stopQuickTime(${q.mins})">${q.label}</button>`).join('')}
+      </div>
+      ${F.datetime('startedAt','',Stops.nowLocal(),
+        {hint:'Adjust if it actually started at another time.'})}
+
+      ${F.select('reason',k.label==='Defect'?'What kind of defect?':'Why did it stop?','',
+        [{v:'',t:'— choose —'}].concat(k.reasons.map(r=>({v:r,t:r}))),
+        {required:true,onchange:'refreshStopLessons()'})}
+
+      ${kind==='defect'?F.num('qty','How many parts affected','',{step:'1',placeholder:'e.g. 12'}):''}
+
+      ${F.area('detail','What happened',"",2,
+        {placeholder:kind==='defect'
+          ? 'e.g. Weld pull tests failing on station 2, parts going to scrap.'
+          : 'e.g. Machine faulted and will not reset, drive shows an alarm.',
+         oninput:'refreshStopLessons()'})}
+
+      <div id="stopLessons"></div>
+
+      ${F.person('by','Reported by',DB.getWho(),{emptyLabel:'— not recorded —'})}
+
+      <div class="note">Save this now and get back to the machine. Close it
+      with <b>Running again</b> when production restarts — that is when you
+      record what fixed it.</div>`,
+    footer:`<button class="btn bad" onclick="saveStop('${jsq(kind)}')">${k.icon} Log ${k.label.toLowerCase()}</button>
+      <button class="btn out" onclick="Modal.close()">Cancel</button>`});
+  setTimeout(refreshStopLessons,120);}
+
+function saveStop(kind){
+  const d=F.read();
+  if(!d.assetId){toast('Pick which equipment stopped');return;}
+  if(!d.reason){toast('Choose a reason — it is what makes the data worth collecting');return;}
+  if(!d.startedAt){toast('Enter when it started');return;}
+
+  /* A start time in the future is a typo, and it would produce a
+     negative duration that quietly corrupts every total. */
+  if(d.startedAt>Stops.nowLocal()){
+    toast('That start time is in the future — check it');return;}
+
+  const rec={
+    id:DB.nextId('stops','EV-',5),
+    kind:kind==='defect'?'defect':'downtime',
+    assetId:d.assetId, reason:d.reason,
+    startedAt:d.startedAt, endedAt:'',
+    qty:d.qty||'', detail:d.detail||'',
+    by:d.by||DB.getWho(), fixedBy:'', woId:''
+  };
+  DB.upsert('stops',rec);
+  Modal.close();route();
+  toast(rec.id+' logged — close it when the machine runs again');}
+
+/* ---------- closing ---------- */
+function closeStop(id){
+  const s=DB.get('stops',id);
+  if(!s){toast('That record no longer exists');route();return;}
+  if(!Stops.isOpen(s)){toast('That one is already closed');return;}
+  const k=Stops.KINDS[s.kind]||Stops.KINDS.downtime;
+  const running=Stops.minutes(s);
+
+  Modal.open({
+    title:'Running again — '+s.id,
+    body:`
+      <div class="pmhead">
+        <div class="pmhead-task">${esc(DB.assetName(s.assetId))} · ${esc(s.reason||'')}</div>
+        <div class="pmhead-meta">${k.label} · started ${fmtLocal(s.startedAt)} ·
+          <b>down ${Stops.fmtMins(running)}</b> so far</div>
+      </div>
+      ${s.detail?`<div class="note">${esc(s.detail)}</div>`:''}
+
+      ${F.datetime('endedAt','When did it start running again?',Stops.nowLocal(),{required:true})}
+
+      ${F.area('fixedBy','What got it running?','',3,
+        {required:true,
+         placeholder:'e.g. Reset the drive and reseated the encoder plug. Ran fine after.',
+         hint:'This single line is the whole point. Next time this happens, this is what the person standing at the machine will read.'})}
+
+      ${F.person('closedBy','Closed by',DB.getWho(),{emptyLabel:'— not recorded —'})}
+
+      <div class="note">Raise a work order too if this needs a proper repair
+      rather than a reset.</div>`,
+    footer:`<button class="btn ok" onclick="doCloseStop('${jsq(id)}')">&#10003; Running again</button>
+      <button class="btn out" onclick="Modal.close();editWOFromStop('${jsq(id)}')">Raise work order</button>
       <button class="btn out" onclick="Modal.close()">Cancel</button>`});}
 
-function doCompletePM(id,opts={}){
-  const p=DB.get('pms',id);
-  if(!p){toast('That PM no longer exists');return;}
-  const d=opts.silent?opts:F.read();
-  const doneDate=d.doneDate||today();
-  const by=(d.by||'').trim()||DB.getWho();
-  if(!by){toast('Record who completed it');return;}
-  /* Write the evidence first. Only advance the schedule once it exists. */
-  const log=Compliance.buildLog(p,{
-    id:DB.nextId('pmlogs','PMC-',5),
-    doneDate,by,hours:d.hours||'',notes:d.notes||'',woId:opts.woId||''});
-  DB.upsert('pmlogs',log);
-  const next=DB.bumpDue(Object.assign({},p,{nextDue:p.nextDue||doneDate}));
-  DB.upsert('pms',{id:p.id,lastDone:doneDate,nextDue:next,lastDoneBy:by});
-  if(!opts.silent)Modal.close();
+function doCloseStop(id){
+  const s=DB.get('stops',id);
+  if(!s){toast('That record no longer exists');return;}
+  const d=F.read();
+  const ended=d.endedAt||Stops.nowLocal();
+
+  if(ended<s.startedAt){
+    toast('That end time is before it started — check it');return;}
+
+  /* A stoppage closed with no explanation is just a number. Nudge
+     firmly, but let a determined person through — a hard block gets
+     defeated with a full stop and then the data is worse AND the
+     technician is annoyed. */
+  if(!d.fixedBy||d.fixedBy.trim().length<5){
+    if(!confirm('Nothing written in "what got it running".\n\nThat line is what the next person reads when this happens again. Right now they would get nothing.\n\nClose it anyway?')){
+      const el=document.getElementById('f_fixedBy');
+      if(el)el.focus();
+      return;}}
+
+  DB.upsert('stops',{id:s.id,endedAt:ended,
+    fixedBy:d.fixedBy||'',closedBy:d.closedBy||DB.getWho()});
+  Modal.close();route();
+  const mins=Stops.minutes(Object.assign({},s,{endedAt:ended}));
+  toast(s.id+' closed — '+Stops.fmtMins(mins)+' lost');}
+
+/* Raise a work order pre-filled from a stoppage, and link the two. */
+function editWOFromStop(stopId){
+  const s=DB.get('stops',stopId);
+  if(!s)return;
+  const wo={
+    id:DB.nextId('wos','WO-',4), assetId:s.assetId,
+    description:(s.reason||'')+(s.detail?' — '+s.detail:''),
+    type:s.kind==='defect'?'Troubleshoot':'Repair',
+    priority:'High', requestedBy:s.by||DB.getWho(),
+    dateRequested:today(), status:'Open', cause:'To be determined',
+    stopId:s.id
+  };
+  DB.upsert('wos',wo);
+  DB.upsert('stops',{id:s.id,woId:wo.id});
   route();
-  const lateNote=log.daysLate!==null&&log.daysLate>Compliance.GRACE_DAYS
-    ?' ('+log.daysLate+' days late)':'';
-  toast(p.id+' recorded'+lateNote+' — next due '+fmtDate(next));}
+  toast(wo.id+' raised from '+s.id);
+  setTimeout(()=>editWO(wo.id),150);}
 
-function showPMHistory(id){
-  const r=Compliance.pmRecord(id);
-  if(!r.pm){toast('That PM no longer exists');return;}
-  Modal.open({title:'History — '+id,
-    body:`<div class="pmhead">
-        <div class="pmhead-task">${esc(r.pm.description||'')}</div>
-        <div class="pmhead-meta">${esc(DB.assetName(r.pm.assetId))} · ${esc(r.pm.frequency||'')}</div></div>
-      ${r.count?`<div class="grid g2" style="gap:12px;margin:16px 0">
-        <div class="statmini"><div class="n">${r.count}</div><div class="l">completions on record</div></div>
-        <div class="statmini"><div class="n" style="color:${r.pct>=90?'var(--ok)':r.pct>=70?'var(--warn)':'var(--bad)'}">${r.pct}%</div><div class="l">done on time</div></div>
+function deleteStop(id){
+  confirmDelete('Delete '+id+'?\n\nThis removes it from every downtime total.',()=>{
+    DB.remove('stops',id);Modal.close();route();toast('Record deleted');});}
+
+/* ---------- one stoppage, as a card ---------- */
+function stopCard(h){
+  const s=h.stop||h;
+  const k=Stops.KINDS[s.kind]||Stops.KINDS.downtime;
+  const mins=Stops.minutes(s);
+  return `<div class="hit" onclick="viewStop('${jsq(s.id)}')">
+    <div class="hit-hd">
+      <b class="mono">${esc(s.id)}</b>
+      <span class="chip ${s.kind==='defect'?'c-pur':'c-prog'}">${k.label}</span>
+      <span class="hit-when">${esc(fmtLocal(s.startedAt))} · ${esc(Stops.fmtMins(mins))}</span>
+      ${s.by?`<span class="hit-who">${esc(s.by)}</span>`:''}
+    </div>
+    <div class="hit-desc">${esc(s.reason||'')}${s.detail?' — '+esc(s.detail):''}</div>
+    ${s.fixedBy?`<div class="hit-notes">${esc(s.fixedBy)}</div>`
+      :`<div class="hit-notes empty-notes">${Stops.isOpen(s)?'Still open.':'No fix recorded.'}</div>`}
+    <div class="hit-ft"><span>${esc(DB.assetName(s.assetId))}</span>
+      ${s.qty?`<span>· ${esc(s.qty)} parts</span>`:''}
+      ${s.woId?`<span>· ${esc(s.woId)}</span>`:''}
+      ${h.reasons?`<span class="hit-why">${esc(h.reasons.join(' · '))}</span>`:''}
+    </div></div>`;}
+
+function viewStop(id){
+  const s=DB.get('stops',id);
+  if(!s){toast('That record no longer exists');route();return;}
+  const k=Stops.KINDS[s.kind]||Stops.KINDS.downtime;
+  const mins=Stops.minutes(s);
+  const c=Stops.cost(s);
+  const open=Stops.isOpen(s);
+  const lessons=Insights.similarStops({assetId:s.assetId,reason:s.reason,
+    description:s.detail||'',excludeId:s.id,limit:3});
+
+  Modal.open({
+    title:k.label+' — '+s.id,
+    body:`
+      <div class="pmhead">
+        <div class="pmhead-task">${esc(DB.assetName(s.assetId))} · ${esc(s.reason||'')}</div>
+        <div class="pmhead-meta">
+          ${esc(fmtLocal(s.startedAt))} → ${open?'<b>still down</b>':esc(fmtLocal(s.endedAt))}
+        </div>
       </div>
-      ${r.drifting?`<div class="note bad">
-        <b>Scheduled every ${r.scheduled} days, actually done every ${r.actualInterval}.</b>
-        Either the schedule is tighter than it needs to be, or this PM keeps slipping.</div>`
-      :r.actualInterval?`<div class="note">Scheduled every ${r.scheduled||'—'} days,
-        actually done every ${r.actualInterval} on average.</div>`:''}
-      <h3 class="sec" style="margin-top:20px">Every completion</h3>
-      <div class="pmlogs">
-        ${r.logs.map(l=>`<div class="pmlog ${Compliance.onTime(l)?'':'late'}">
-          <div class="pmlog-hd"><b>${fmtDate(l.doneDate)}</b>
-            ${Compliance.onTime(l)?'<span class="chip c-done">On time</span>'
-              :`<span class="chip c-crit">${l.daysLate} days late</span>`}
-            <span class="pmlog-by">${esc(l.by||'unrecorded')}</span></div>
-          <div class="pmlog-meta">was due ${fmtDate(l.dueDate)}${l.hours?' · '+esc(l.hours)+'h':''}${l.woId?' · '+esc(l.woId):''}</div>
-          ${l.notes?`<div class="pmlog-notes">${esc(l.notes)}</div>`
-            :'<div class="pmlog-notes empty-notes">No findings recorded.</div>'}
-        </div>`).join('')}</div>`
-      :`<div class="empty"><b style="display:block;color:var(--ink);margin-bottom:6px">Never completed</b>
-          There is no record of this PM ever being done.
-          <br><small>If it has been done and just was not logged, an admin can import the history.</small>
-        </div>`}`,
-    footer:`<button class="btn ok" onclick="Modal.close();completePM('${jsq(id)}')">Record a completion</button>
-      <button class="btn out" onclick="Modal.close();editPM('${jsq(id)}')">Edit PM</button>
-      <button class="btn out" onclick="Modal.close()">Close</button>`});}
+      <div class="grid g2" style="gap:12px;margin:16px 0">
+        <div class="statmini"><div class="n" style="color:${open?'var(--bad)':'inherit'}">${Stops.fmtMins(mins)}</div>
+          <div class="l">${open?'down so far':'production lost'}</div></div>
+        <div class="statmini"><div class="n">${c===null?'—':money0(c)}</div>
+          <div class="l">${c===null?'no hourly rate set':'estimated cost'}</div></div>
+      </div>
+      ${Stops.isStale(s)?`<div class="note bad">
+        <b>Open for more than ${Stops.STALE_HOURS} hours.</b> If the machine is
+        running, close it with the real time — left open it keeps counting and
+        distorts every total on the reports.</div>`:''}
+      ${s.qty?`<div class="profile-row"><span>Parts affected</span><b>${esc(s.qty)}</b></div>`:''}
+      ${s.detail?`<div><div class="profile-label" style="margin-top:14px">What happened</div>
+        <div class="pmlog-notes">${esc(s.detail)}</div></div>`:''}
+      ${s.fixedBy?`<div><div class="profile-label" style="margin-top:14px">What got it running</div>
+        <div class="pmlog-notes">${esc(s.fixedBy)}</div></div>`:''}
+      <div class="profile-row" style="margin-top:14px"><span>Reported by</span><b>${esc(s.by||'—')}</b></div>
+      ${s.closedBy?`<div class="profile-row"><span>Closed by</span><b>${esc(s.closedBy)}</b></div>`:''}
+      ${s.woId?`<div class="profile-row"><span>Work order</span><b class="mono">${esc(s.woId)}</b></div>`:''}
+      ${lessons.length?`<h3 class="sec" style="margin-top:22px">&#128161; Same thing, other times</h3>
+        ${lessons.map(stopCard).join('')}`:''}`,
+    footer:`${open?`<button class="btn ok" onclick="Modal.close();closeStop('${jsq(id)}')">&#10003; Running again</button>`:''}
+      ${!s.woId?`<button class="btn out" onclick="Modal.close();editWOFromStop('${jsq(id)}')">Raise work order</button>`
+        :`<button class="btn out" onclick="Modal.close();editWO('${jsq(s.woId)}')">Open ${esc(s.woId)}</button>`}
+      <button class="btn out" onclick="Modal.close()">Close</button>
+      ${DB.can('delete')?`<button class="btn bad" style="margin-left:auto" onclick="deleteStop('${jsq(id)}')">Delete</button>`:''}`});}
 
-function setCompDays(d){COMP_DAYS=d;route();}
-function setCompAsset(a){COMP_ASSET=a;route();}
+/* ---------- the banner ----------
+   Deliberately loud and always visible. An open stoppage nobody
+   closes is the single failure mode that makes this whole feature
+   worthless. */
+function openStopsBanner(){
+  const open=Stops.open();
+  if(!open.length)return '';
+  const stale=open.filter(Stops.isStale);
+  return `<div class="downbanner">
+    <div class="downbanner-hd">
+      <span class="pulse"></span>
+      <b>${open.length} ${open.length===1?'machine is':'machines are'} down right now</b>
+      ${stale.length?`<span class="chip c-crit">${stale.length} open over ${Stops.STALE_HOURS}h</span>`:''}
+    </div>
+    <div class="downlist">
+      ${open.map(s=>`<div class="downrow ${Stops.isStale(s)?'stale':''}">
+        <div class="downrow-txt" onclick="viewStop('${jsq(s.id)}')">
+          <b>${esc(DB.assetName(s.assetId))}</b>
+          <span>${esc(s.reason||'')} · down <b>${esc(Stops.fmtMins(Stops.minutes(s)))}</b>${s.by?' · '+esc(s.by):''}</span>
+        </div>
+        <button class="btn ok sm" onclick="closeStop('${jsq(s.id)}')">Running again</button>
+      </div>`).join('')}
+    </div>
+  </div>`;}
 
-function renderCompliance(){
-  const s=Compliance.summary({days:COMP_DAYS,assetId:COMP_ASSET});
-  const people=Compliance.byPerson(COMP_DAYS);
-  const never=Compliance.neverDone();
+/* ============================================================
+   DOWNTIME SCREEN — where the numbers live
+   ============================================================ */
+function setStopDays(d){STOP_DAYS=d;route();}
+function setStopKind(k){STOP_KIND=k;route();}
+function setStopAsset(a){STOP_ASSET=a;route();}
+
+function renderStops(){
+  const s=Stops.summary({days:STOP_DAYS,assetId:STOP_ASSET,kind:STOP_KIND});
+  const pareto=Stops.byReason({days:STOP_DAYS,assetId:STOP_ASSET,kind:STOP_KIND});
+  const worst=Stops.byAsset({days:STOP_DAYS,kind:STOP_KIND});
+  const repeats=Stops.repeats();
   const assets=DB.all('assets');
-  const pctColor=p=>p===null?'var(--muted)':p>=90?'var(--ok)':p>=70?'var(--warn)':'var(--bad)';
-  return `
-  <h1 class="page">PM Compliance</h1>
-  <p class="sub">Evidence of preventive maintenance actually performed — every line is a permanent record.</p>
-  <div class="chipset">
-    <button class="fchip ${COMP_DAYS===30?'on':''}" onclick="setCompDays(30)">30 days</button>
-    <button class="fchip ${COMP_DAYS===90?'on':''}" onclick="setCompDays(90)">90 days</button>
-    <button class="fchip ${COMP_DAYS===365?'on':''}" onclick="setCompDays(365)">12 months</button>
-    <select onchange="setCompAsset(this.value)" style="width:auto;min-width:200px">
-      ${[{v:'',t:'All machines'}].concat(assets.map(a=>({v:a.id,t:a.id+' · '+a.name})))
-        .map(o=>`<option value="${esc(o.v)}" ${COMP_ASSET===o.v?'selected':''}>${esc(o.t)}</option>`).join('')}
-    </select>
-    <button class="btn out" onclick="exportCompliance()">&#128196; Export for audit</button>
-  </div>
-  <div class="grid g4" style="margin-bottom:20px">
-    <div class="stat"><div class="n" style="color:${pctColor(s.pct)}">${s.pct===null?'—':s.pct+'%'}</div>
-      <div class="l">Completed on time</div><div class="d">${s.onTime} of ${s.done}</div></div>
-    <div class="stat"><div class="n">${s.done}</div><div class="l">PMs completed</div>
-      <div class="d">last ${COMP_DAYS} days</div></div>
-    <div class="stat"><div class="n" style="color:${s.late?'var(--bad)':'inherit'}">${s.late}</div>
-      <div class="l">Completed late</div><div class="d">more than ${Compliance.GRACE_DAYS} days past due</div></div>
-    <div class="stat"><div class="n" style="color:${s.overdueNow?'var(--bad)':'var(--ok)'}">${s.overdueNow}</div>
-      <div class="l">Overdue right now</div></div>
-  </div>
-  ${s.overdueNow?`<div class="card"><h3 class="sec">Overdue today — fix these first</h3>
-    ${renderTable([
-      {label:'PM',render:r=>`<b class="mono">${esc(r.id)}</b>`},
-      {label:'Task',render:r=>`<b>${esc(r.description||'—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>`},
-      {label:'Was due',render:r=>dueChip(r.nextDue)},
-      {label:'Responsible',render:r=>r.tech?esc(r.tech):'<span class="chip c-crit">Nobody</span>'},
-      {label:'',render:r=>`<button class="btn ok sm" onclick="event.stopPropagation();completePM('${jsq(r.id)}')">Record done</button>`}
-    ],s.overdueList,{onRow:'showPMHistory'})}</div>`:''}
-  ${never.length?`<div class="card"><h3 class="sec">Never completed — ${never.length} schedule${never.length===1?'':'s'}</h3>
-    <div class="note bad">These PMs have no completion on record at all. If the work has been
-    happening, it is not being logged — which for an audit is the same as not happening.</div>
-    ${renderTable([
-      {label:'PM',render:r=>`<b class="mono">${esc(r.id)}</b>`},
-      {label:'Task',render:r=>`<b>${esc(r.description||'—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>`},
-      {label:'Frequency',hideSm:true,render:r=>`<span class="chip c-open">${esc(r.frequency||'—')}</span>`},
-      {label:'Next due',render:r=>dueChip(r.nextDue)},
-      {label:'Responsible',hideSm:true,render:r=>r.tech?esc(r.tech):'<span style="color:var(--muted)">Nobody</span>'}
-    ],never,{onRow:'showPMHistory'})}</div>`:''}
-  <div class="card"><h3 class="sec">Completion log — last ${COMP_DAYS} days</h3>
-    ${renderTable([
-      {label:'Completed',render:l=>`<b>${fmtDate(l.doneDate)}</b>`},
-      {label:'PM',render:l=>`<span class="mono">${esc(l.pmId)}</span>`},
-      {label:'Task',render:l=>`${esc(l.description||'—')}<br><small style="color:var(--muted)">${esc(DB.assetName(l.assetId))}</small>`},
-      {label:'Was due',hideSm:true,render:l=>fmtDate(l.dueDate)},
-      {label:'On time',render:l=>Compliance.onTime(l)?'<span class="chip c-done">Yes</span>'
-        :`<span class="chip c-crit">${l.daysLate}d late</span>`},
-      {label:'By',render:l=>esc(l.by||'—')},
-      {label:'Hrs',num:true,hideSm:true,render:l=>l.hours||'—'},
-      {label:'Findings',hideSm:true,render:l=>l.notes
-        ?esc(l.notes.length>60?l.notes.slice(0,60)+'…':l.notes)
-        :'<span style="color:var(--muted)">—</span>'}
-    ],s.logs,{empty:'No PM completions recorded in this period.'})}
-    ${s.done?`<div class="note">${s.documented} of ${s.done} (${s.docPct}%) recorded what was found.</div>`:''}
-  </div>
-  ${people.length?`<div class="card"><h3 class="sec">By technician — last ${COMP_DAYS} days</h3>
-    ${renderTable([
-      {label:'Technician',render:r=>`<b>${esc(r.name)}</b>`},
-      {label:'Completed',num:true,render:r=>r.done},
-      {label:'On time',num:true,render:r=>r.done-r.late},
-      {label:'Late',num:true,render:r=>r.late?`<b style="color:var(--bad)">${r.late}</b>`:'0'},
-      {label:'On-time rate',render:r=>`<span style="color:${pctColor(r.pct)};font-weight:600">${r.pct}%</span>`},
-      {label:'Hours',num:true,hideSm:true,render:r=>r.hours.toFixed(1)}
-    ],people)}
-    <div class="note">Late is usually a scheduling or workload problem rather than a person problem —
-    a technician cannot do a PM on a machine that is running production.</div>
-  </div>`:''}`;}
 
-function exportCompliance(){
-  const rows=Compliance.exportRows({assetId:COMP_ASSET});
-  if(!rows.length){toast('No completion records to export');return;}
-  CSV.download('pm-compliance-'+today()+'.csv',CSV.build(Compliance.EXPORT_COLUMNS,rows));
-  toast(rows.length+' completion records exported');}
+  return `
+  <h1 class="page">Downtime &amp; Defects</h1>
+  <p class="sub">How much production was lost, and why.</p>
+
+  ${openStopsBanner()}
+
+  <div class="chipset">
+    <button class="btn bad" onclick="openStopChooser()">&#9888; Log downtime or defect</button>
+    <button class="fchip ${STOP_DAYS===7?'on':''}" onclick="setStopDays(7)">7 days</button>
+    <button class="fchip ${STOP_DAYS===30?'on':''}" onclick="setStopDays(30)">30 days</button>
+    <button class="fchip ${STOP_DAYS===90?'on':''}" onclick="setStopDays(90)">90 days</button>
+    <button class="fchip ${STOP_KIND===''?'on':''}" onclick="setStopKind('')">Both</button>
+    <button class="fchip ${STOP_KIND==='downtime'?'on':''}" onclick="setStopKind('downtime')">Downtime</button>
+    <button class="fchip ${STOP_KIND==='defect'?'on':''}" onclick="setStopKind('defect')">Defects</button>
+    <select onchange="setStopAsset(this.value)" style="width:auto;min-width:180px">
+      ${[{v:'',t:'All equipment'}].concat(assets.map(a=>({v:a.id,t:a.id+' · '+a.name})))
+        .map(o=>`<option value="${esc(o.v)}" ${STOP_ASSET===o.v?'selected':''}>${esc(o.t)}</option>`).join('')}
+    </select>
+    <button class="btn out" onclick="exportStops()">&#128196; Export</button>
+  </div>
+
+  <div class="grid g4" style="margin-bottom:20px">
+    <div class="stat"><div class="n" style="color:${s.mins?'var(--bad)':'var(--ok)'}">${Stops.fmtMins(s.mins)}</div>
+      <div class="l">Production lost</div><div class="d">last ${STOP_DAYS} days</div></div>
+    <div class="stat"><div class="n">${s.closedCount}</div><div class="l">Events closed</div>
+      <div class="d">${s.openCount} still open</div></div>
+    <div class="stat"><div class="n">${Stops.fmtMins(s.downMins)}</div><div class="l">Machine downtime</div>
+      <div class="d">vs ${Stops.fmtMins(s.defMins)} defects</div></div>
+    <div class="stat"><div class="n">${s.cost===null?'—':money0(s.cost)}</div>
+      <div class="l">Estimated cost</div>
+      <div class="d">${s.cost===null?'set an hourly rate on equipment':'from equipment hourly rates'}</div></div>
+  </div>
+
+  ${s.staleCount?`<div class="note bad">
+    <b>${s.staleCount} record${s.staleCount===1?'':'s'} open for more than ${Stops.STALE_HOURS} hours.</b>
+    Almost certainly forgotten rather than genuinely still down. They are kept
+    out of the totals above until closed, so the numbers stay honest — but
+    close them with the real time to get the lost production counted.</div>`:''}
+
+  ${repeats.length?`<div class="card">
+    <h3 class="sec">Same thing, again and again — 3+ times this year</h3>
+    <div class="repeats">
+      ${repeats.slice(0,6).map(r=>`<div class="repeat" onclick="openAsset('${jsq(r.assetId)}')">
+        <div class="repeat-hd">
+          <span class="chip c-crit">${r.count}×</span>
+          <b>${esc(DB.assetName(r.assetId))}</b>
+          <span class="chip ${r.kind==='defect'?'c-pur':'c-prog'}">${r.kind==='defect'?'Defect':'Downtime'}</span>
+        </div>
+        <div class="repeat-cause">${esc(r.reason)}</div>
+        <div class="repeat-ft">
+          <span><b>${Stops.fmtMins(r.mins)}</b> lost in total</span>
+          ${r.cost!==null?`<span>· <b>${money0(r.cost)}</b></span>`:''}
+          <span>· last ${esc(fmtLocal(r.last))}</span>
+        </div>
+      </div>`).join('')}
+    </div>
+    <div class="note">The same reason on the same machine three times is a
+    root-cause problem, not bad luck. This is where a PM change or a design
+    fix pays for itself.</div>
+  </div>`:''}
+
+  ${pareto.length?`<div class="card">
+    <h3 class="sec">Where the time actually goes</h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Reason</th><th>Type</th><th style="text-align:right">Times</th>
+        <th style="text-align:right">Lost</th><th>Share</th></tr></thead>
+      <tbody>${pareto.map(r=>`<tr>
+        <td><b>${esc(r.reason)}</b></td>
+        <td><span class="chip ${r.kind==='defect'?'c-pur':'c-prog'}">${r.kind==='defect'?'Defect':'Downtime'}</span></td>
+        <td class="num">${r.count}</td>
+        <td class="num"><b>${Stops.fmtMins(r.mins)}</b></td>
+        <td style="min-width:140px">
+          <div class="bar" style="margin:0"><i style="width:${r.pct}%;background:var(--bad)"></i></div>
+          <small style="color:var(--muted)">${r.pct}% · running ${r.cumPct}%</small>
+        </td></tr>`).join('')}</tbody>
+    </table></div>
+    <div class="note">Sorted by time lost, not by how often it happens.
+    Twelve two-minute jams matter less than one six-hour electrical fault,
+    and counting events would hide that.</div>
+  </div>`:''}
+
+  ${worst.length?`<div class="card">
+    <h3 class="sec">Worst equipment — last ${STOP_DAYS} days</h3>
+    ${renderTable([
+      {label:'Equipment',render:r=>`<b>${esc(DB.assetName(r.assetId))}</b><br><small class="mono" style="color:var(--muted)">${esc(r.assetId)}</small>`},
+      {label:'Events',num:true,render:r=>r.count},
+      {label:'Downtime',num:true,render:r=>Stops.fmtMins(r.down)},
+      {label:'Defects',num:true,hideSm:true,render:r=>Stops.fmtMins(r.defect)},
+      {label:'Total lost',num:true,render:r=>`<b>${Stops.fmtMins(r.mins)}</b>`}
+    ],worst,{onRow:'openAsset'})}
+  </div>`:''}
+
+  <div class="card">
+    <h3 class="sec">Recent events</h3>
+    ${renderTable([
+      {label:'Record',render:r=>`<b class="mono">${esc(r.id)}</b>`},
+      {label:'Type',render:r=>`<span class="chip ${r.kind==='defect'?'c-pur':'c-prog'}">${r.kind==='defect'?'Defect':'Downtime'}</span>`},
+      {label:'Equipment',render:r=>`<b>${esc(DB.assetName(r.assetId))}</b>`},
+      {label:'Reason',render:r=>esc(r.reason||'—')},
+      {label:'Started',hideSm:true,render:r=>esc(fmtLocal(r.startedAt))},
+      {label:'Lost',num:true,render:r=>Stops.isOpen(r)
+        ? `<b style="color:var(--bad)">${Stops.fmtMins(Stops.minutes(r))}</b>`
+        : Stops.fmtMins(Stops.minutes(r))},
+      {label:'Status',render:r=>Stops.isOpen(r)
+        ? (Stops.isStale(r)?'<span class="chip c-crit">open, stale</span>':'<span class="chip c-crit">still down</span>')
+        : '<span class="chip c-done">closed</span>'},
+      {label:'Fix recorded',hideSm:true,render:r=>r.fixedBy
+        ? esc(r.fixedBy.length>48?r.fixedBy.slice(0,48)+'…':r.fixedBy)
+        : '<span style="color:var(--muted)">—</span>'}
+    ],Stops.recent(40),{empty:'Nothing logged yet.',onRow:'viewStop'})}
+    ${s.closedCount?`<div class="note">${s.documented} of ${s.closedCount} closed
+      events (${s.docPct}%) recorded what got the machine running. That line is
+      what Smart Assist offers the next person.</div>`:''}
+  </div>`;}
+
+function exportStops(){
+  const rows=Stops.exportRows({assetId:STOP_ASSET,kind:STOP_KIND});
+  if(!rows.length){toast('Nothing to export');return;}
+  CSV.download('downtime-'+today()+'.csv',CSV.build(Stops.EXPORT_COLUMNS,rows));
+  toast(rows.length+' records exported');}
 
 /* ============================================================
    SMART ASSIST
@@ -346,15 +653,17 @@ function runSmartSearch(){
   const out=document.getElementById('smartResults');
   if(!out)return;
   if(!q.trim()&&!a){
-    out.innerHTML=`<div class="empty">Describe the problem, or pick a machine, to search past repairs.</div>`;return;}
-  out.innerHTML=renderHits(Insights.similarRepairs({assetId:a,description:q,limit:8}),q);}
+    out.innerHTML=`<div class="empty">Describe the problem, or pick a machine, to search what has been fixed before.</div>`;return;}
+  out.innerHTML=renderHits(Insights.findLessons({assetId:a,description:q,limit:10}),q);}
 
 function hitCard(h){
+  if(h.source==='stop')return stopCard(h);
   const w=h.wo;
   const who=w.assignedTo||w.completedBy||'';
   const when=w.dateCompleted||w.dateRequested;
   return `<div class="hit" onclick="editWO('${jsq(w.id)}')">
     <div class="hit-hd"><b class="mono">${esc(w.id)}</b>
+      <span class="chip c-open">Work order</span>
       <span class="hit-when">${esc(Insights.ago(h.ageDays))}</span>
       ${w.cause&&w.cause!=='To be determined'?`<span class="chip c-prog">${esc(w.cause)}</span>`:''}
       ${who?`<span class="hit-who">${esc(who)}</span>`:''}</div>
@@ -371,62 +680,87 @@ function renderHits(hits,q){
   if(!hits.length){
     return `<div class="empty">
       <b style="display:block;color:var(--ink);margin-bottom:6px">Nothing similar on record</b>
-      ${q?'No closed work order matches that description yet.':'No history for that machine yet.'}
+      ${q?'No closed work order or downtime record matches that yet.':'No history for that machine yet.'}
       <br><small>Once this job is closed with good notes, it will show up here next time.</small></div>`;}
   return `<div class="hits">${hits.map(hitCard).join('')}</div>`;}
 
 function renderSmart(){
   const q=Insights.dataQuality();
   const repeats=Insights.repeatFailures();
+  const stopRepeats=Stops.repeats();
   return `
   <h1 class="page">Smart Assist</h1>
-  <p class="sub">Patterns from work already closed in this plant. Every result is a real work order you can open.</p>
+  <p class="sub">What this plant has already fixed — from work orders and downtime records. Every result is real and you can open it.</p>
+
   <div class="card smartcard">
     <h3 class="sec">Seen this before?</h3>
     <div class="f2">
       <div><label for="smartQ">Describe the problem</label>
         <input id="smartQ" value="${esc(SMART_Q)}" placeholder="e.g. bad welds on station 2"
           onkeydown="if(event.key==='Enter')runSmartSearch()"/></div>
-      <div>${F.select('smartAsset','On which machine (optional)',SMART_ASSET,assetOptions())}</div>
+      <div>${F.select('smartAsset','On which equipment (optional)',SMART_ASSET,assetOptions())}</div>
     </div>
     <div class="actions">
-      <button class="btn filled" onclick="runSmartSearch()">&#128269; Search past repairs</button>
+      <button class="btn filled" onclick="runSmartSearch()">&#128269; Search</button>
       <button class="btn out" onclick="document.getElementById('smartQ').value='';document.getElementById('f_smartAsset').value='';runSmartSearch()">Clear</button>
     </div>
     <div id="smartResults" style="margin-top:18px">
-      <div class="empty">Describe the problem, or pick a machine, to search past repairs.</div></div>
+      <div class="empty">Describe the problem, or pick a machine, to search what has been fixed before.</div></div>
   </div>
-  <div class="card">
-    <h3 class="sec">Recurring problems — same machine, same cause, 3+ times in a year</h3>
-    ${repeats.length?`<div class="repeats">
+
+  ${(repeats.length||stopRepeats.length)?`<div class="card">
+    <h3 class="sec">Recurring problems</h3>
+    <div class="repeats">
       ${repeats.map(r=>`<div class="repeat" onclick="openAsset('${jsq(r.assetId)}')">
         <div class="repeat-hd"><span class="chip c-crit">${r.count}×</span>
           <b>${esc(DB.assetName(r.assetId))}</b>
-          <span class="mono" style="color:var(--muted)">${esc(r.assetId)}</span></div>
+          <span class="chip c-open">Repairs</span></div>
         <div class="repeat-cause">${esc(r.cause)}</div>
         <div class="repeat-ft">
-          ${r.hours?`<span><b>${r.hours.toFixed(1)}h</b> total</span>`:''}
+          ${r.hours?`<span><b>${r.hours.toFixed(1)}h</b> of work</span>`:''}
           ${r.avgGap?`<span>· roughly every <b>${r.avgGap} days</b></span>`:''}
-          <span>· last ${fmtDate(r.last)}</span></div>
-        <div class="repeat-wos">${r.wos.map(w=>`<span class="mono">${esc(w.id)}</span>`).join(' ')}</div>
-      </div>`).join('')}</div>
-    <div class="note">Something failing this often is usually a root-cause problem, not bad luck.</div>`
-    :`<div class="empty">No recurring pattern found.</div>`}
-  </div>
+        </div></div>`).join('')}
+      ${stopRepeats.slice(0,6).map(r=>`<div class="repeat" onclick="openAsset('${jsq(r.assetId)}')">
+        <div class="repeat-hd"><span class="chip c-crit">${r.count}×</span>
+          <b>${esc(DB.assetName(r.assetId))}</b>
+          <span class="chip ${r.kind==='defect'?'c-pur':'c-prog'}">${r.kind==='defect'?'Defect':'Downtime'}</span></div>
+        <div class="repeat-cause">${esc(r.reason)}</div>
+        <div class="repeat-ft"><span><b>${Stops.fmtMins(r.mins)}</b> lost in total</span>
+          ${r.cost!==null?`<span>· <b>${money0(r.cost)}</b></span>`:''}</div>
+      </div>`).join('')}
+    </div>
+  </div>`:''}
+
   <div class="card">
-    <h3 class="sec">How useful this can be</h3>
+    <h3 class="sec">How much this can find</h3>
     <div class="bar"><i style="width:${q.pct}%;background:${q.pct>=70?'var(--ok)':q.pct>=40?'var(--warn)':'var(--bad)'}"></i></div>
-    <div class="quality"><span><b>${q.usable}</b> of <b>${q.done}</b> closed work orders have both a cause and real notes — <b>${q.pct}%</b></span></div>
-    ${q.done===0?`<div class="note">No completed work orders yet.</div>`
-      :q.pct<60?`<div class="note bad"><b>${q.noNotes} closed work order${q.noNotes===1?'':'s'} have no real notes.</b></div>`
-      :`<div class="note">Good documentation rate.</div>`}
+    <div class="quality">
+      <span><b>${q.usable}</b> of <b>${q.total}</b> closed records explain what was actually done — <b>${q.pct}%</b><br>
+      <small>${q.done} work orders · ${q.stops} downtime and defect records (${q.stopsDocumented} with a fix noted)</small></span>
+    </div>
+    ${q.total===0?`<div class="note">Nothing closed yet.</div>`
+      :q.pct<60?`<div class="note bad"><b>Most records do not say what was done.</b>
+        One honest line at close is what turns this from a counter into something worth reading.</div>`
+      :`<div class="note">Good documentation rate — that is what makes the results above useful.</div>`}
+  </div>
+
+  <div class="card">
+    <h3 class="sec">What this is, and is not</h3>
+    <div class="tablewrap"><table><tbody>
+      <tr><td>&#10003; Searches your own closed work orders and downtime records</td></tr>
+      <tr><td>&#10003; Every result links to a real record you can open</td></tr>
+      <tr><td>&#10003; Runs on this device — nothing leaves the plant</td></tr>
+      <tr><td>&#10003; Works offline</td></tr>
+      <tr><td style="color:var(--muted)">— It does not invent fixes it has not seen</td></tr>
+      <tr><td style="color:var(--muted)">— It cannot read your PDF manuals (yet)</td></tr>
+    </tbody></table></div>
   </div>`;}
 
 function similarPanel(assetId,description,cause,excludeId){
-  const hits=Insights.similarRepairs({assetId,description,cause,excludeId,limit:4});
+  const hits=Insights.findLessons({assetId,description,cause,excludeId,limit:4});
   if(!hits.length)return '';
   return `<div class="seenbefore">
-    <div class="seen-hd">&#128161; Seen before — ${hits.length} similar repair${hits.length===1?'':'s'}</div>
+    <div class="seen-hd">&#128161; Seen before — ${hits.length} similar</div>
     ${hits.map(hitCard).join('')}</div>`;}
 
 function refreshSimilar(excludeId){
@@ -455,51 +789,54 @@ function renderHome(){
   const meName=DB.getWho();
   const myWos=wos.filter(w=>DB.isActive(w)&&(w.assignedTo||'')===meName);
   const myPms=pms.filter(p=>(p.tech||'')===meName&&(DB.daysUntil(p.nextDue)??99)<=14);
-  const repeats=Insights.repeatFailures();
   const comp=Compliance.summary({days:90});
+  const st=Stops.summary({days:30});
 
   if(!assets.length&&!wos.length){
     return `<h1 class="page">Welcome, ${esc(meName)}</h1>
       <p class="sub">The database is empty.</p>
       <div class="placeholder"><div style="font-size:34px">&#128736;</div>
         <b style="display:block;margin:10px 0 6px;color:var(--ink);font-size:16px">Start here</b>
-        <span>${DB.isAdmin()?'Import your asset list, or load sample data to look around.':'Ask an admin to import the asset list.'}</span>
+        <span>${DB.isAdmin()?'Import your equipment list, or load sample data to look around.':'Ask an admin to import the equipment list.'}</span>
         <div class="actions" style="justify-content:center">
           ${DB.isAdmin()?`<a class="btn filled" href="#/import">Import CSV</a>
           <button class="btn out" onclick="seedSample()">Load sample data</button>`:''}
-          <button class="btn out" onclick="editAsset()">Add first asset</button></div></div>`;}
+          <button class="btn out" onclick="editAsset()">Add first equipment</button></div></div>`;}
 
   return `
   <h1 class="page">Home</h1>
   <p class="sub">${esc(DB.raw().meta.site||'Maintenance')} · signed in as <b>${esc(meName)}</b> (${esc(ROLE_LABEL[DB.role()]||DB.role())})</p>
-  <div class="hub">
-    <a class="tile" href="#/assets"><div class="ic">&#128451;</div><h2>Find an Asset</h2>
-      <p>Search the plant, scan the QR tag, or open the machine manual.</p>
-      <ul><li>Asset name / serial number</li><li>Manuals and drawings</li><li>Machine BOM and repair history</li></ul></a>
-    <a class="tile" href="#/wo"><div class="ic">&#129534;</div><h2>Work Orders</h2>
-      <p>Create or complete work, in a list or on the calendar.</p>
-      <ul><li>${openWos.length} pending · ${progWos.length} in progress</li>
-      <li>Assigned to a named person</li><li>Generate a WO from any PM</li></ul></a>
-    <a class="tile smart" href="#/smart"><div class="ic">&#128161;</div><h2>Smart Assist</h2>
-      <p>Has this happened before? Search what your team already fixed.</p>
-      <ul><li>Similar past repairs, with notes</li>
-      <li>${repeats.length?`<b>${repeats.length} recurring problem${repeats.length===1?'':'s'} found</b>`:'Recurring-failure detection'}</li>
-      <li>Who fixed it last time</li></ul></a>
+
+  ${openStopsBanner()}
+
+  <div class="bigactions">
+    <button class="bigaction" onclick="openWorkChooser()">
+      <div class="ba-ic">&#128736;</div>
+      <div class="ba-txt"><b>Raise work</b><span>Work order or PM</span></div>
+    </button>
+    <button class="bigaction bad" onclick="openStopChooser()">
+      <div class="ba-ic">&#9888;</div>
+      <div class="ba-txt"><b>Report a problem</b><span>Downtime or defect</span></div>
+    </button>
+    <a class="bigaction ghost" href="#/smart">
+      <div class="ba-ic">&#128161;</div>
+      <div class="ba-txt"><b>Has this happened before?</b><span>Search past fixes</span></div>
+    </a>
   </div>
+
   <div class="grid g4" style="margin-bottom:20px">
-    <div class="stat click" onclick="location.hash='#/assets'"><div class="n">${assets.length}</div><div class="l">Assets in plant</div></div>
+    <div class="stat click" onclick="location.hash='#/assets'"><div class="n">${assets.length}</div><div class="l">Equipment in plant</div></div>
     <div class="stat click" onclick="WO_FILTER='open';location.hash='#/wo'">
-      <div class="n" style="color:${openWos.length?'var(--pri)':'inherit'}">${openWos.length}</div><div class="l">Pending work orders</div></div>
-    <div class="stat click" onclick="location.hash='#/pm'">
-      <div class="n" style="color:${duePms.length?'var(--bad)':'inherit'}">${duePms.length}</div><div class="l">PMs due within 7 days</div></div>
+      <div class="n" style="color:${openWos.length?'var(--pri)':'inherit'}">${openWos.length}</div>
+      <div class="l">Pending work orders</div><div class="d">${progWos.length} in progress</div></div>
+    <div class="stat click" onclick="location.hash='#/stops'">
+      <div class="n" style="color:${st.mins?'var(--bad)':'var(--ok)'}">${Stops.fmtMins(st.mins)}</div>
+      <div class="l">Lost in 30 days</div><div class="d">${st.closedCount} events</div></div>
     <div class="stat click" onclick="location.hash='#/compliance'">
       <div class="n" style="color:${comp.pct===null?'inherit':comp.pct>=90?'var(--ok)':comp.pct>=70?'var(--warn)':'var(--bad)'}">${comp.pct===null?'—':comp.pct+'%'}</div>
-      <div class="l">PM compliance (90d)</div><div class="d">${comp.done} completed</div></div>
+      <div class="l">PM compliance (90d)</div><div class="d">${duePms.length} due this week</div></div>
   </div>
-  ${repeats.length?`<div class="note bad">
-    <b>${repeats.length} recurring failure${repeats.length===1?'':'s'} detected.</b>
-    ${esc(DB.assetName(repeats[0].assetId))} has had <b>${esc(repeats[0].cause)}</b> ${repeats[0].count} times.
-    <a href="#/smart">Look at the pattern</a>.</div>`:''}
+
   ${(myWos.length||myPms.length)?`<div class="card"><h3 class="sec">Your work</h3>
     ${myWos.length?renderTable([
       {label:'WO',render:r=>`<b class="mono">${esc(r.id)}</b>`},
@@ -515,15 +852,13 @@ function renderHome(){
         {label:'',render:r=>`<button class="btn ok sm" onclick="event.stopPropagation();completePM('${jsq(r.id)}')">Mark done</button>`}
       ],myPms,{onRow:'showPMHistory'})}`:''}
   </div>`:''}
-  ${recent.length?`<div class="card"><h3 class="sec">Recently viewed assets</h3>
-    ${recent.map(a=>`<a class="pill" href="#/asset/${encodeURIComponent(a.id)}"><b>${esc(a.id)}</b> <small>${esc(a.name)}</small></a>`).join('')}</div>`:''}
-  <div class="card"><h3 class="sec">Quick actions</h3>
-    <div class="actions" style="margin-top:0">
-      <button class="btn filled" onclick="editWO()">&#43; New work order</button>
-      <a class="btn out" href="#/compliance">PM compliance</a>
-      <a class="btn out" href="#/smart">Search past repairs</a>
-      <a class="btn out" href="#/qr">Print QR tags</a></div></div>`;}
 
+  ${recent.length?`<div class="card"><h3 class="sec">Recently viewed equipment</h3>
+    ${recent.map(a=>`<a class="pill" href="#/asset/${encodeURIComponent(a.id)}"><b>${esc(a.id)}</b> <small>${esc(a.name)}</small></a>`).join('')}</div>`:''}`;}
+
+/* ============================================================
+   DASHBOARD
+   ============================================================ */
 function renderDashboard(){
   const assets=DB.all('assets'),pms=DB.all('pms'),parts=DB.all('parts'),wos=DB.all('wos');
   const openWos=wos.filter(DB.isActive);
@@ -533,36 +868,64 @@ function renderDashboard(){
   const unassigned=openWos.filter(w=>!w.assignedTo);
   const repeats=Insights.repeatFailures();
   const comp=Compliance.summary({days:90});
+  const st=Stops.summary({days:30});
+  const pareto=Stops.byReason({days:30});
   const stat=(ic,bg,col,n,l,d)=>`
     <div class="stat"><div class="ic" style="background:${bg};color:${col}">${ic}</div>
       <div class="n">${n}</div><div class="l">${esc(l)}</div>${d?`<div class="d">${esc(d)}</div>`:''}</div>`;
   return `
   <h1 class="page">Dashboard</h1>
   <p class="sub">${esc(DB.raw().meta.site||'Maintenance overview')}</p>
+
+  ${openStopsBanner()}
+
   <div class="grid g4" style="margin-bottom:20px">
-    ${stat('&#128451;','var(--info-c)','var(--pri)',assets.length,'Assets registered')}
+    ${stat('&#128451;','var(--info-c)','var(--pri)',assets.length,'Equipment registered')}
     ${stat('&#129534;','var(--bad-c)','var(--bad)',openWos.length,'Open work orders',
       openWos.filter(w=>w.priority==='High').length+' high priority')}
-    ${stat('&#128197;','var(--warn-c)','var(--warn)',duePms.length,'PMs due within 7 days',pms.length+' scheduled total')}
+    ${stat('&#9888;',st.mins?'var(--bad-c)':'var(--ok-c)',st.mins?'var(--bad)':'var(--ok)',
+      Stops.fmtMins(st.mins),'Production lost (30d)',
+      st.cost!==null?money0(st.cost)+' estimated':st.closedCount+' events')}
     ${stat('&#9989;',comp.pct===null?'var(--surf-3)':comp.pct>=90?'var(--ok-c)':'var(--warn-c)',
       comp.pct===null?'var(--muted)':comp.pct>=90?'var(--ok)':'var(--warn)',
-      comp.pct===null?'—':comp.pct+'%','PM compliance (90d)',comp.late+' late, '+comp.overdueNow+' overdue')}
+      comp.pct===null?'—':comp.pct+'%','PM compliance (90d)',comp.overdueNow+' overdue now')}
   </div>
+
+  ${pareto.length?`<div class="card">
+    <h3 class="sec">Biggest causes of lost production — 30 days</h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Reason</th><th>Equipment type</th><th style="text-align:right">Times</th>
+        <th style="text-align:right">Lost</th><th>Share</th></tr></thead>
+      <tbody>${pareto.slice(0,6).map(r=>`<tr>
+        <td><b>${esc(r.reason)}</b></td>
+        <td><span class="chip ${r.kind==='defect'?'c-pur':'c-prog'}">${r.kind==='defect'?'Defect':'Downtime'}</span></td>
+        <td class="num">${r.count}</td>
+        <td class="num"><b>${Stops.fmtMins(r.mins)}</b></td>
+        <td style="min-width:120px"><div class="bar" style="margin:0"><i style="width:${r.pct}%;background:var(--bad)"></i></div></td>
+      </tr>`).join('')}</tbody></table></div>
+    <div class="actions"><a class="btn out sm" href="#/stops">Open downtime</a></div>
+  </div>`:''}
+
   ${comp.overdueNow?`<div class="note bad">
     <b>${comp.overdueNow} PM${comp.overdueNow===1?' is':'s are'} overdue right now.</b>
     <a href="#/compliance">See which</a>.</div>`:''}
-  ${repeats.length?`<div class="card"><h3 class="sec">Recurring failures</h3>
+
+  ${repeats.length?`<div class="card">
+    <h3 class="sec">Recurring failures</h3>
     ${renderTable([
-      {label:'Machine',render:r=>`<b>${esc(DB.assetName(r.assetId))}</b><br><small class="mono" style="color:var(--muted)">${esc(r.assetId)}</small>`},
+      {label:'Equipment',render:r=>`<b>${esc(DB.assetName(r.assetId))}</b><br><small class="mono" style="color:var(--muted)">${esc(r.assetId)}</small>`},
       {label:'Cause',render:r=>`<span class="chip c-crit">${esc(r.cause)}</span>`},
       {label:'Times',num:true,render:r=>`<b>${r.count}</b>`},
       {label:'Hours',num:true,render:r=>r.hours.toFixed(1)},
       {label:'Every',hideSm:true,render:r=>r.avgGap?'~'+r.avgGap+' days':'—'}
     ],repeats,{onRow:'openAsset'})}
-    <div class="actions"><a class="btn out sm" href="#/smart">Open Smart Assist</a></div></div>`:''}
+    <div class="actions"><a class="btn out sm" href="#/smart">Open Smart Assist</a></div>
+  </div>`:''}
+
   ${unassigned.length?`<div class="note bad">
     <b>${unassigned.length} open work order${unassigned.length===1?'':'s'} with nobody assigned.</b>
     <a href="#" onclick="WO_FILTER='unassigned';location.hash='#/wo';return false;">Show them</a>.</div>`:''}
+
   <div class="grid g2">
     <div class="card"><h3 class="sec">PMs due next</h3>
       ${renderTable([
@@ -581,6 +944,7 @@ function renderDashboard(){
       ],openWos.slice(0,6),{empty:'No open work orders.',onRow:'editWO'})}
       <div class="actions"><a class="btn out sm" href="#/wo">Open work orders</a></div></div>
   </div>
+
   ${lowParts.length?`<div class="card"><h3 class="sec">Low stock — reorder</h3>
     ${renderTable([
       {label:'Part',key:'id'},{label:'Description',key:'description'},
@@ -606,49 +970,53 @@ function docChip(url,label){
   return safeUrl(url)?`<span class="chip c-open" title="${esc(label||'Document attached')}">&#128196;</span>`:'';}
 
 /* ============================================================
-   ASSETS
+   EQUIPMENT  (stored as "assets"; the word on screen is Equipment)
    ============================================================ */
 function renderAssets(){
   const rows=DB.all('assets').filter(a=>
     matches(a,['id','name','manufacturer','model','serial','project','location','owner']));
   const withDocs=rows.filter(a=>safeUrl(a.manualUrl)||safeUrl(a.drawingUrl)).length;
   return `
-  <h1 class="page">Assets</h1>
-  <p class="sub">${rows.length} asset${rows.length===1?'':'s'}${SEARCH?` matching “${esc(SEARCH)}”`:' in the register'} · ${withDocs} with documents linked</p>
+  <h1 class="page">Equipment</h1>
+  <p class="sub">${rows.length} item${rows.length===1?'':'s'}${SEARCH?` matching “${esc(SEARCH)}”`:' in the register'} · ${withDocs} with documents linked</p>
   <div class="chipset">
-    <button class="btn filled" onclick="editAsset()">&#43; New asset</button>
+    <button class="btn filled" onclick="editAsset()">&#43; New equipment</button>
     <a class="btn out" href="#/qr">QR tags</a>
     <button class="btn out" onclick="exportCSV('assets')">Export CSV</button>
     ${DB.isAdmin()?'<a class="btn out" href="#/import">Import CSV</a>':''}
   </div>
   <div class="card" style="padding:6px 20px 20px">
-    <h3 class="sec" style="margin-top:16px">Asset register</h3>
+    <h3 class="sec" style="margin-top:16px">Equipment register</h3>
     ${renderTable([
-      {label:'Asset ID',render:r=>`<b class="mono">${esc(r.id)}</b>`},
-      {label:'Equipment name',render:r=>`<b>${esc(r.name||'—')}</b>${r.location?`<br><small style="color:var(--muted)">${esc(r.location)}</small>`:''}`},
+      {label:'Equipment ID',render:r=>`<b class="mono">${esc(r.id)}</b>`},
+      {label:'Name',render:r=>`<b>${esc(r.name||'—')}</b>${r.location?`<br><small style="color:var(--muted)">${esc(r.location)}</small>`:''}`},
       {label:'Owner',hideSm:true,render:r=>r.owner?esc(r.owner):'<span style="color:var(--muted)">—</span>'},
       {label:'Docs',render:r=>{
         if(safeUrl(r.manualUrl))return docLink(r.manualUrl,'Manual',{cls:'btn out sm'});
         if(safeUrl(r.drawingUrl))return docLink(r.drawingUrl,'Drawing',{cls:'btn out sm'});
         return '<span style="color:var(--muted)">—</span>';}},
-      {label:'Status',render:r=>`<span class="chip ${r.status==='Down'?'c-crit':r.status==='Retired'?'c-hold':'c-done'}">${esc(r.status||'Active')}</span>`},
+      {label:'Status',render:r=>{
+        const down=Stops.open().some(s=>s.assetId===r.id);
+        if(down)return '<span class="chip c-crit">DOWN NOW</span>';
+        return `<span class="chip ${r.status==='Down'?'c-crit':r.status==='Retired'?'c-hold':'c-done'}">${esc(r.status||'Active')}</span>`;}},
+      {label:'Lost 30d',num:true,hideSm:true,render:r=>{
+        const s=Stops.summary({days:30,assetId:r.id});
+        return s.mins?`<b style="color:var(--bad)">${Stops.fmtMins(s.mins)}</b>`:'—';}},
       {label:'Open WOs',num:true,render:r=>{
         const n=DB.forAsset('wos',r.id).filter(DB.isActive).length;
         return n?`<b style="color:var(--bad)">${n}</b>`:'0';}},
-      {label:'PMs',num:true,hideSm:true,render:r=>DB.forAsset('pms',r.id).length},
       {label:'',hideSm:true,render:r=>`<button class="btn out sm" onclick="event.stopPropagation();editAsset('${jsq(r.id)}')">Edit</button>`}
-    ],rows,{empty:SEARCH?'No assets match that search.':'No assets yet.',onRow:'openAsset'})}
+    ],rows,{empty:SEARCH?'No equipment matches that search.':'No equipment yet.',onRow:'openAsset'})}
   </div>`;}
 
 function renderAssetDetail(id){
   const a=DB.get('assets',id);
-  if(!a)return `<h1 class="page">Asset not found</h1>
-    <p class="sub">No asset with ID “${esc(id)}”.</p>
-    <a class="btn filled" href="#/assets">Back to assets</a>`;
+  if(!a)return `<h1 class="page">Equipment not found</h1>
+    <p class="sub">Nothing with ID “${esc(id)}”.</p>
+    <a class="btn filled" href="#/assets">Back to equipment</a>`;
   DB.touchAsset(id);
   const wos=DB.forAsset('wos',id),pms=DB.forAsset('pms',id),parts=DB.forAsset('parts',id);
   const pending=wos.filter(DB.isOpen);
-  const prog=wos.filter(w=>w.status==='In Progress');
   const done=wos.filter(DB.isDone);
   const recentRepairs=done.sort((x,y)=>(y.dateCompleted||'').localeCompare(x.dateCompleted||'')).slice(0,5);
   const lowParts=parts.filter(p=>DB.partStatus(p).label==='Low stock').length;
@@ -656,47 +1024,82 @@ function renderAssetDetail(id){
   const health=Insights.assetHealth(id);
   const myRepeats=Insights.repeatFailures().filter(r=>r.assetId===id);
   const comp=Compliance.summary({days:365,assetId:id});
-  const pmHistory=Compliance.logsForAsset(id).slice(0,8);
+  const pmHistory=Compliance.logsForAsset(id).slice(0,6);
+  const st=Stops.summary({days:90,assetId:id});
+  const stopRepeats=Stops.repeats().filter(r=>r.assetId===id);
+  const myStops=Stops.forAsset(id).slice(0,8);
+  const isDown=Stops.open().some(s=>s.assetId===id);
+
   return `
-  <div class="crumb"><a href="#/home">Home</a> › <a href="#/assets">Assets</a> › ${esc(a.id)}</div>
+  <div class="crumb"><a href="#/home">Home</a> › <a href="#/assets">Equipment</a> › ${esc(a.id)}</div>
   <div class="ahead"><div class="big">&#9881;</div>
     <div class="who"><h1>${esc(a.name||a.id)}</h1>
-      <div class="meta">Asset <b class="mono">${esc(a.id)}</b>${a.serial?` · Serial <b class="mono">${esc(a.serial)}</b>`:''}<br>
+      <div class="meta">Equipment <b class="mono">${esc(a.id)}</b>${a.serial?` · Serial <b class="mono">${esc(a.serial)}</b>`:''}<br>
         ${a.manufacturer?esc(a.manufacturer):'Manufacturer not set'}${a.model?' · '+esc(a.model):''}${a.location?' · '+esc(a.location):''}
-        ${a.owner?`<br>Responsible: <b>${esc(a.owner)}</b>`:''}</div>
+        ${a.owner?`<br>Responsible: <b>${esc(a.owner)}</b>`:''}
+        ${a.hourlyCost?`<br>Downtime rate: <b>$${esc(a.hourlyCost)}/hour</b>`:''}</div>
       ${a.notes?`<div class="note" style="margin-top:12px">${esc(a.notes)}</div>`:''}
-      <div style="margin-top:12px"><span class="chip ${a.status==='Down'?'c-crit':a.status==='Retired'?'c-hold':'c-done'}" style="font-size:13px;padding:8px 14px">${esc(a.status||'Active')}</span></div></div>
+      <div style="margin-top:12px">
+        ${isDown?'<span class="chip c-crit" style="font-size:13px;padding:8px 14px">DOWN RIGHT NOW</span>'
+          :`<span class="chip ${a.status==='Down'?'c-crit':a.status==='Retired'?'c-hold':'c-done'}" style="font-size:13px;padding:8px 14px">${esc(a.status||'Active')}</span>`}
+      </div></div>
     <div class="qrbox hide-print">${qrSvg(assetUrl(a.id),116)}<small>Scan to open</small>
       <button class="btn out sm" style="margin-top:8px" onclick="showQR('${jsq(a.id)}')">Tag</button></div>
   </div>
-  ${myRepeats.length?`<div class="note bad"><b>Recurring problem on this machine.</b>
-    ${myRepeats.map(r=>`<b>${esc(r.cause)}</b> ${r.count} times${r.avgGap?`, roughly every ${r.avgGap} days`:''}`).join('; ')}.
-    <a href="#/smart">See the pattern</a>.</div>`:''}
+
+  ${(myRepeats.length||stopRepeats.length)?`<div class="note bad">
+    <b>Recurring problem on this machine.</b>
+    ${myRepeats.map(r=>`<b>${esc(r.cause)}</b> ${r.count} times`).join('; ')}
+    ${myRepeats.length&&stopRepeats.length?'; ':''}
+    ${stopRepeats.map(r=>`<b>${esc(r.reason)}</b> ${r.count} times (${Stops.fmtMins(r.mins)} lost)`).join('; ')}.
+    </div>`:''}
+
   ${hasDocs?`<div class="card doccard"><h3 class="sec">Documentation</h3>
     <div class="actions" style="margin-top:0">
       ${docLink(a.manualUrl,'Machine manual',{cls:'btn filled',icon:'&#128214;'})}
       ${docLink(a.drawingUrl,'Drawings / schematics',{cls:'btn tonal',icon:'&#128208;'})}
     </div></div>`:''}
+
   <div class="chipset">
-    <button class="btn filled" onclick="newWOFor('${jsq(a.id)}')">&#43; New work order</button>
-    <button class="btn tonal" onclick="newPMFor('${jsq(a.id)}')">&#43; Add PM</button>
+    <button class="btn filled" onclick="openWorkChooser('${jsq(a.id)}')">&#128736; Raise work</button>
+    <button class="btn bad" onclick="openStopChooser('${jsq(a.id)}')">&#9888; Report a problem</button>
     <button class="btn out" onclick="newPartFor('${jsq(a.id)}')">&#43; Add part</button>
-    <button class="btn out" onclick="editAsset('${jsq(a.id)}')">Edit asset</button>
-    <button class="btn out" onclick="smartForAsset('${jsq(a.id)}')">&#128161; Past repairs</button>
+    <button class="btn out" onclick="editAsset('${jsq(a.id)}')">Edit</button>
+    <button class="btn out" onclick="smartForAsset('${jsq(a.id)}')">&#128161; Past fixes</button>
   </div>
+
   <div class="grid g4" style="margin-bottom:20px">
     <div class="stat"><div class="ic" style="background:var(--info-c);color:var(--pri)">&#128203;</div>
       <div class="n">${pending.length}</div><div class="l">Pending work orders</div></div>
-    <div class="stat"><div class="ic" style="background:var(--warn-c);color:var(--warn)">&#128295;</div>
-      <div class="n">${prog.length}</div><div class="l">In progress</div></div>
+    <div class="stat click" onclick="setStopAsset('${jsq(a.id)}');location.hash='#/stops'">
+      <div class="ic" style="background:var(--bad-c);color:var(--bad)">&#9888;</div>
+      <div class="n" style="color:${st.mins?'var(--bad)':'inherit'}">${Stops.fmtMins(st.mins)}</div>
+      <div class="l">Lost in 90 days</div>
+      <div class="d">${st.cost!==null?money0(st.cost):st.closedCount+' events'}</div></div>
     <div class="stat click" onclick="setCompAsset('${jsq(a.id)}');location.hash='#/compliance'">
       <div class="ic" style="background:var(--ok-c);color:var(--ok)">&#9989;</div>
       <div class="n" style="color:${comp.pct===null?'inherit':comp.pct>=90?'var(--ok)':comp.pct>=70?'var(--warn)':'var(--bad)'}">${comp.pct===null?'—':comp.pct+'%'}</div>
-      <div class="l">PM compliance (1 yr)</div><div class="d">${comp.done} completed</div></div>
+      <div class="l">PM compliance (1 yr)</div></div>
     <div class="stat"><div class="ic" style="background:var(--pur-c);color:var(--pur)">&#128736;</div>
       <div class="n">${done.length}</div><div class="l">Repairs completed</div>
       <div class="d">${health.hours.toFixed(1)}h logged</div></div>
   </div>
+
+  ${myStops.length?`<div class="card">
+    <h3 class="sec">Downtime &amp; defects — last ${myStops.length}</h3>
+    ${renderTable([
+      {label:'When',render:r=>esc(fmtLocal(r.startedAt))},
+      {label:'Type',render:r=>`<span class="chip ${r.kind==='defect'?'c-pur':'c-prog'}">${r.kind==='defect'?'Defect':'Downtime'}</span>`},
+      {label:'Reason',render:r=>`<b>${esc(r.reason||'—')}</b>`},
+      {label:'Lost',num:true,render:r=>Stops.isOpen(r)
+        ?`<b style="color:var(--bad)">${Stops.fmtMins(Stops.minutes(r))}</b>`
+        :Stops.fmtMins(Stops.minutes(r))},
+      {label:'What fixed it',hideSm:true,render:r=>r.fixedBy
+        ?esc(r.fixedBy.length>44?r.fixedBy.slice(0,44)+'…':r.fixedBy)
+        :'<span style="color:var(--muted)">—</span>'}
+    ],myStops,{onRow:'viewStop'})}
+  </div>`:''}
+
   ${health.total>=2?`<div class="card smartcard">
     <h3 class="sec">&#128161; Failure profile — from ${health.total} completed repairs</h3>
     <div class="grid g2" style="gap:14px">
@@ -705,7 +1108,8 @@ function renderAssetDetail(id){
       <div>${health.meanGap?`<div class="profile-row"><span>Average time between repairs</span><b>${health.meanGap} days</b></div>`:''}
         ${health.topPeople.length?`<div class="profile-row"><span>Knows this machine best</span><b>${esc(health.topPeople[0].name)}</b></div>`:''}</div>
     </div></div>`:''}
-  <div class="card"><h3 class="sec">PM program — schedule, frequency and owner</h3>
+
+  <div class="card"><h3 class="sec">PM program</h3>
     ${renderTable([
       {label:'PM',render:r=>`<b class="mono">${esc(r.id)}</b>`},
       {label:'Task',render:r=>`<b>${esc(r.description||'—')}</b> ${docChip(r.procedureUrl,'Procedure attached')}`},
@@ -714,25 +1118,22 @@ function renderAssetDetail(id){
       {label:'Done',num:true,render:r=>{
         const n=Compliance.logsFor(r.id).length;
         return n?`<b>${n}×</b>`:'<span class="chip c-crit">never</span>';}},
-      {label:'Responsible',hideSm:true,render:r=>r.tech?esc(r.tech):'<span style="color:var(--muted)">Unassigned</span>'},
-      {label:'',render:r=>`<button class="btn ok sm" onclick="event.stopPropagation();completePM('${jsq(r.id)}')">Mark done</button>
-        <button class="btn out sm" onclick="event.stopPropagation();genWO('${jsq(r.id)}')">Generate WO</button>`}
+      {label:'',render:r=>`<button class="btn ok sm" onclick="event.stopPropagation();completePM('${jsq(r.id)}')">Mark done</button>`}
     ],pms.sort((x,y)=>(x.nextDue||'9999').localeCompare(y.nextDue||'9999')),
-      {empty:'No PM schedules on this asset.',onRow:'showPMHistory'})}
+      {empty:'No PM schedules on this equipment.',onRow:'showPMHistory'})}
   </div>
-  ${pmHistory.length?`<div class="card"><h3 class="sec">PM completion history — last ${pmHistory.length}</h3>
+
+  ${pmHistory.length?`<div class="card"><h3 class="sec">PM completion history</h3>
     ${renderTable([
       {label:'Completed',render:l=>`<b>${fmtDate(l.doneDate)}</b>`},
       {label:'PM',render:l=>`<span class="mono">${esc(l.pmId)}</span>`},
-      {label:'Task',render:l=>esc(l.description||'—')},
       {label:'On time',render:l=>Compliance.onTime(l)?'<span class="chip c-done">Yes</span>'
         :`<span class="chip c-crit">${l.daysLate}d late</span>`},
       {label:'By',render:l=>esc(l.by||'—')},
       {label:'Findings',hideSm:true,render:l=>l.notes
-        ?esc(l.notes.length>50?l.notes.slice(0,50)+'…':l.notes):'<span style="color:var(--muted)">—</span>'}
-    ],pmHistory)}
-    <div class="actions"><a class="btn out sm" href="#" onclick="setCompAsset('${jsq(a.id)}');location.hash='#/compliance';return false;">Full compliance record</a></div>
-  </div>`:''}
+        ?esc(l.notes.length>44?l.notes.slice(0,44)+'…':l.notes):'<span style="color:var(--muted)">—</span>'}
+    ],pmHistory)}</div>`:''}
+
   <div class="grid g2">
     <div class="card"><h3 class="sec">Recent repairs</h3>
       ${renderTable([
@@ -747,6 +1148,7 @@ function renderAssetDetail(id){
         {label:'Assigned',render:r=>r.assignedTo?esc(r.assignedTo):'<span class="chip c-crit">Nobody</span>'}
       ],wos.filter(DB.isActive),{empty:'Nothing open.',onRow:'editWO'})}</div>
   </div>
+
   <div class="card"><h3 class="sec">Machine BOM${lowParts?` · ${lowParts} low`:''}</h3>
     ${renderTable([
       {label:'Part number',render:r=>`<b class="mono">${esc(r.id)}</b>`},
@@ -762,6 +1164,9 @@ function newWOFor(a){editWO(null,a);}
 function newPMFor(a){editPM(null,a);}
 function newPartFor(a){editPart(null,a);}
 
+/* ============================================================
+   QR TAGS
+   ============================================================ */
 function renderQR(){
   const assets=DB.all('assets').filter(a=>matches(a,['id','name','location','manufacturer']));
   const base=appBaseUrl();
@@ -776,8 +1181,8 @@ function renderQR(){
       <li>A <b>404</b> means the file never made it into the repo — upload it and commit.</li>
       <li>Code showing means it loaded but errored — hard-refresh with <b>Ctrl+Shift+R</b>.</li>
     </ul></div>`;
-  if(!assets.length)return `<h1 class="page">QR Tags</h1><p class="sub">No assets to tag yet.</p>
-    <div class="placeholder">Add an asset first.</div>`;
+  if(!assets.length)return `<h1 class="page">QR Tags</h1><p class="sub">No equipment to tag yet.</p>
+    <div class="placeholder">Add equipment first.</div>`;
   const site=DB.raw().meta.site||'';
   return `
   <h1 class="page">QR Tags</h1>
@@ -819,13 +1224,16 @@ function downloadTag(id){
   el.click();URL.revokeObjectURL(el.href);
   toast('QR downloaded');}
 
+/* ============================================================
+   EQUIPMENT form
+   ============================================================ */
 function editAsset(id){
-  if(id&&!DB.get('assets',id)){toast('That asset no longer exists');route();return;}
+  if(id&&!DB.get('assets',id)){toast('That equipment no longer exists');route();return;}
   const a=id?DB.get('assets',id):{};
   const isNew=!id;
-  Modal.open({title:isNew?'New asset':'Asset '+a.id,
-    body:`${F.text('id','Asset ID',a.id||DB.nextId('assets','',4),{required:true,readonly:!isNew})}
-      ${F.text('name','Equipment name',a.name,{required:true,placeholder:'e.g. Top Roll Assembly'})}
+  Modal.open({title:isNew?'New equipment':'Equipment '+a.id,
+    body:`${F.text('id','Equipment ID',a.id||DB.nextId('assets','',4),{required:true,readonly:!isNew})}
+      ${F.text('name','Name',a.name,{required:true,placeholder:'e.g. Top Roll Assembly'})}
       <div class="f2">
         <div>${F.text('manufacturer','Manufacturer',a.manufacturer)}</div>
         <div>${F.text('model','Model',a.model,{hint:'Machines sharing a model are matched together in Smart Assist.'})}</div>
@@ -835,30 +1243,33 @@ function editAsset(id){
         <div>${F.select('status','Status',a.status||'Active',['Active','Standby','Down','Retired'])}</div>
       </div>
       ${F.person('owner','Responsible person',a.owner,{emptyLabel:'— nobody assigned —'})}
+      ${F.num('hourlyCost','Downtime cost per hour',a.hourlyCost,{step:'1',placeholder:'e.g. 500',
+        hint:'Optional. Set this and every downtime record on this machine gets a dollar figure — which is the number that gets attention upstairs. Leave blank rather than guessing.'})}
       <h3 class="sec" style="margin-top:24px">Documentation</h3>
       ${F.text('manualUrl','Machine manual link',a.manualUrl,{placeholder:'https://iacgroup.sharepoint.com/...',hint:LINK_HINT})}
       ${F.text('drawingUrl','Drawings / schematics link',a.drawingUrl,{placeholder:'https://iacgroup.sharepoint.com/...'})}
       ${F.area('notes','Notes',a.notes)}
       ${!isNew&&a.updatedBy?`<div class="note">Last changed by <b>${esc(a.updatedBy)}</b></div>`:''}`,
-    footer:`<button class="btn filled" onclick="saveAsset(${isNew})">Save asset</button>
+    footer:`<button class="btn filled" onclick="saveAsset(${isNew})">Save equipment</button>
       ${!isNew?`<button class="btn out" onclick="showQR('${jsq(a.id)}')">QR tag</button>`:''}
       <button class="btn out" onclick="Modal.close()">Cancel</button>
       ${!isNew&&DB.can('delete')?`<button class="btn bad" style="margin-left:auto" onclick="delAsset('${jsq(a.id)}')">Delete</button>`:''}`});}
 
 function saveAsset(isNew){
   const d=F.read();
-  if(!d.id||!d.name){toast('Asset ID and equipment name are required');return;}
-  if(isNew&&DB.get('assets',d.id)){toast('That asset ID already exists');return;}
+  if(!d.id||!d.name){toast('Equipment ID and name are required');return;}
+  if(isNew&&DB.get('assets',d.id)){toast('That equipment ID already exists');return;}
   if(d.manualUrl&&!safeUrl(d.manualUrl)){toast('The manual link is not a valid web address');return;}
   if(d.drawingUrl&&!safeUrl(d.drawingUrl)){toast('The drawings link is not a valid web address');return;}
   DB.upsert('assets',d);Modal.close();
   if(isNew)openAsset(d.id);else route();
-  toast('Asset '+d.id+' saved');}
+  toast('Equipment '+d.id+' saved');}
 
 function delAsset(id){
   const pms=DB.forAsset('pms',id).length,wos=DB.forAsset('wos',id).length;
-  confirmDelete(`Delete asset ${id}?\n\n${pms} PM(s) and ${wos} work order(s) will be unlinked but not deleted.`,()=>{
-    DB.remove('assets',id);Modal.close();location.hash='#/assets';toast('Asset deleted');});}
+  const stops=Stops.forAsset(id).length;
+  confirmDelete(`Delete equipment ${id}?\n\n${pms} PM(s), ${wos} work order(s) and ${stops} downtime record(s) will be unlinked but not deleted.`,()=>{
+    DB.remove('assets',id);Modal.close();location.hash='#/assets';toast('Equipment deleted');});}
 
 /* ============================================================
    PM PLAN
@@ -934,7 +1345,7 @@ function editPM(id,presetAsset){
   const logs=id?Compliance.logsFor(id):[];
   Modal.open({title:isNew?'New PM schedule':'PM '+p.id,
     body:`${F.text('id','PM number',p.id||DB.nextId('pms','PM-',3),{required:true,readonly:!isNew})}
-      ${F.select('assetId','Asset',p.assetId||presetAsset||'',assetOptions(),{required:true})}
+      ${F.select('assetId','Equipment',p.assetId||presetAsset||'',assetOptions(),{required:true})}
       ${F.area('description','PM description',p.description,3)}
       <div class="f2">
         <div>${F.select('frequency','Frequency',p.frequency||'monthly',FREQS)}</div>
@@ -975,6 +1386,169 @@ function genWO(pmId){
     status:'Open',pmId:p.id,cause:'To be determined'};
   DB.upsert('wos',wo);route();
   toast(wo.id+' created from '+p.id+(wo.assignedTo?' for '+wo.assignedTo:''));}
+
+/* ---------- PM completion ---------- */
+function completePM(id){
+  const p=DB.get('pms',id);
+  if(!p){toast('That PM no longer exists');route();return;}
+  const due=p.nextDue||'';
+  const lateBy=due?Compliance.daysBetween(due,today()):null;
+  const next=DB.bumpDue(p);
+  Modal.open({title:'Complete '+p.id,
+    body:`<div class="pmhead">
+        <div class="pmhead-task">${esc(p.description||'PM '+p.id)}</div>
+        <div class="pmhead-meta">${esc(DB.assetName(p.assetId))} ·
+          ${esc(p.frequency||'')} ${due?'· was due '+fmtDate(due):''}</div></div>
+      ${lateBy!==null&&lateBy>Compliance.GRACE_DAYS?`<div class="note bad">
+        This is <b>${lateBy} days past due</b>. That is recorded as-is — the history is
+        only worth anything if it is honest.</div>`:''}
+      ${F.date('doneDate','Date completed',today(),{required:true,
+        hint:'Change this if the work was actually done on a different day.'})}
+      ${F.person('by','Completed by',DB.getWho(),{required:true,emptyLabel:'— select —'})}
+      ${F.num('hours','Hours taken','',{step:'0.25',placeholder:'e.g. 0.5'})}
+      ${F.area('notes','What you found','',3,{
+        placeholder:'e.g. Sonotrode faces clean, weld quality within spec, no action needed.',
+        hint:'Findings matter even when nothing was wrong — "checked, all normal" is a valid record.'})}
+      <div class="note">Saving writes a permanent completion record and moves the next due date to
+        <b>${fmtDate(next)}</b>. Completion records cannot be edited afterwards.</div>`,
+    footer:`<button class="btn ok" onclick="doCompletePM('${jsq(id)}')">Record completion</button>
+      <button class="btn out" onclick="Modal.close()">Cancel</button>`});}
+
+function doCompletePM(id,opts={}){
+  const p=DB.get('pms',id);
+  if(!p){toast('That PM no longer exists');return;}
+  const d=opts.silent?opts:F.read();
+  const doneDate=d.doneDate||today();
+  const by=(d.by||'').trim()||DB.getWho();
+  if(!by){toast('Record who completed it');return;}
+  /* Write the evidence first. Only advance the schedule once it exists. */
+  const log=Compliance.buildLog(p,{
+    id:DB.nextId('pmlogs','PMC-',5),
+    doneDate,by,hours:d.hours||'',notes:d.notes||'',woId:opts.woId||''});
+  DB.upsert('pmlogs',log);
+  const next=DB.bumpDue(Object.assign({},p,{nextDue:p.nextDue||doneDate}));
+  DB.upsert('pms',{id:p.id,lastDone:doneDate,nextDue:next,lastDoneBy:by});
+  if(!opts.silent)Modal.close();
+  route();
+  const lateNote=log.daysLate!==null&&log.daysLate>Compliance.GRACE_DAYS
+    ?' ('+log.daysLate+' days late)':'';
+  toast(p.id+' recorded'+lateNote+' — next due '+fmtDate(next));}
+
+function showPMHistory(id){
+  const r=Compliance.pmRecord(id);
+  if(!r.pm){toast('That PM no longer exists');return;}
+  Modal.open({title:'History — '+id,
+    body:`<div class="pmhead">
+        <div class="pmhead-task">${esc(r.pm.description||'')}</div>
+        <div class="pmhead-meta">${esc(DB.assetName(r.pm.assetId))} · ${esc(r.pm.frequency||'')}</div></div>
+      ${r.count?`<div class="grid g2" style="gap:12px;margin:16px 0">
+        <div class="statmini"><div class="n">${r.count}</div><div class="l">completions on record</div></div>
+        <div class="statmini"><div class="n" style="color:${r.pct>=90?'var(--ok)':r.pct>=70?'var(--warn)':'var(--bad)'}">${r.pct}%</div><div class="l">done on time</div></div>
+      </div>
+      ${r.drifting?`<div class="note bad">
+        <b>Scheduled every ${r.scheduled} days, actually done every ${r.actualInterval}.</b>
+        Either the schedule is tighter than it needs to be, or this PM keeps slipping.</div>`
+      :r.actualInterval?`<div class="note">Scheduled every ${r.scheduled||'—'} days,
+        actually done every ${r.actualInterval} on average.</div>`:''}
+      <h3 class="sec" style="margin-top:20px">Every completion</h3>
+      <div class="pmlogs">
+        ${r.logs.map(l=>`<div class="pmlog ${Compliance.onTime(l)?'':'late'}">
+          <div class="pmlog-hd"><b>${fmtDate(l.doneDate)}</b>
+            ${Compliance.onTime(l)?'<span class="chip c-done">On time</span>'
+              :`<span class="chip c-crit">${l.daysLate} days late</span>`}
+            <span class="pmlog-by">${esc(l.by||'unrecorded')}</span></div>
+          <div class="pmlog-meta">was due ${fmtDate(l.dueDate)}${l.hours?' · '+esc(l.hours)+'h':''}${l.woId?' · '+esc(l.woId):''}</div>
+          ${l.notes?`<div class="pmlog-notes">${esc(l.notes)}</div>`
+            :'<div class="pmlog-notes empty-notes">No findings recorded.</div>'}
+        </div>`).join('')}</div>`
+      :`<div class="empty"><b style="display:block;color:var(--ink);margin-bottom:6px">Never completed</b>
+          There is no record of this PM ever being done.</div>`}`,
+    footer:`<button class="btn ok" onclick="Modal.close();completePM('${jsq(id)}')">Record a completion</button>
+      <button class="btn out" onclick="Modal.close();editPM('${jsq(id)}')">Edit PM</button>
+      <button class="btn out" onclick="Modal.close()">Close</button>`});}
+
+/* ---------- compliance screen ---------- */
+function setCompDays(d){COMP_DAYS=d;route();}
+function setCompAsset(a){COMP_ASSET=a;route();}
+
+function renderCompliance(){
+  const s=Compliance.summary({days:COMP_DAYS,assetId:COMP_ASSET});
+  const people=Compliance.byPerson(COMP_DAYS);
+  const never=Compliance.neverDone();
+  const assets=DB.all('assets');
+  const pctColor=p=>p===null?'var(--muted)':p>=90?'var(--ok)':p>=70?'var(--warn)':'var(--bad)';
+  return `
+  <h1 class="page">PM Compliance</h1>
+  <p class="sub">Evidence of preventive maintenance actually performed — every line is a permanent record.</p>
+  <div class="chipset">
+    <button class="fchip ${COMP_DAYS===30?'on':''}" onclick="setCompDays(30)">30 days</button>
+    <button class="fchip ${COMP_DAYS===90?'on':''}" onclick="setCompDays(90)">90 days</button>
+    <button class="fchip ${COMP_DAYS===365?'on':''}" onclick="setCompDays(365)">12 months</button>
+    <select onchange="setCompAsset(this.value)" style="width:auto;min-width:200px">
+      ${[{v:'',t:'All equipment'}].concat(assets.map(a=>({v:a.id,t:a.id+' · '+a.name})))
+        .map(o=>`<option value="${esc(o.v)}" ${COMP_ASSET===o.v?'selected':''}>${esc(o.t)}</option>`).join('')}
+    </select>
+    <button class="btn out" onclick="exportCompliance()">&#128196; Export for audit</button>
+  </div>
+  <div class="grid g4" style="margin-bottom:20px">
+    <div class="stat"><div class="n" style="color:${pctColor(s.pct)}">${s.pct===null?'—':s.pct+'%'}</div>
+      <div class="l">Completed on time</div><div class="d">${s.onTime} of ${s.done}</div></div>
+    <div class="stat"><div class="n">${s.done}</div><div class="l">PMs completed</div>
+      <div class="d">last ${COMP_DAYS} days</div></div>
+    <div class="stat"><div class="n" style="color:${s.late?'var(--bad)':'inherit'}">${s.late}</div>
+      <div class="l">Completed late</div><div class="d">more than ${Compliance.GRACE_DAYS} days past due</div></div>
+    <div class="stat"><div class="n" style="color:${s.overdueNow?'var(--bad)':'var(--ok)'}">${s.overdueNow}</div>
+      <div class="l">Overdue right now</div></div>
+  </div>
+  ${s.overdueNow?`<div class="card"><h3 class="sec">Overdue today — fix these first</h3>
+    ${renderTable([
+      {label:'PM',render:r=>`<b class="mono">${esc(r.id)}</b>`},
+      {label:'Task',render:r=>`<b>${esc(r.description||'—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>`},
+      {label:'Was due',render:r=>dueChip(r.nextDue)},
+      {label:'Responsible',render:r=>r.tech?esc(r.tech):'<span class="chip c-crit">Nobody</span>'},
+      {label:'',render:r=>`<button class="btn ok sm" onclick="event.stopPropagation();completePM('${jsq(r.id)}')">Record done</button>`}
+    ],s.overdueList,{onRow:'showPMHistory'})}</div>`:''}
+  ${never.length?`<div class="card"><h3 class="sec">Never completed — ${never.length} schedule${never.length===1?'':'s'}</h3>
+    <div class="note bad">These PMs have no completion on record at all. If the work has been
+    happening, it is not being logged — which for an audit is the same as not happening.</div>
+    ${renderTable([
+      {label:'PM',render:r=>`<b class="mono">${esc(r.id)}</b>`},
+      {label:'Task',render:r=>`<b>${esc(r.description||'—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>`},
+      {label:'Frequency',hideSm:true,render:r=>`<span class="chip c-open">${esc(r.frequency||'—')}</span>`},
+      {label:'Next due',render:r=>dueChip(r.nextDue)}
+    ],never,{onRow:'showPMHistory'})}</div>`:''}
+  <div class="card"><h3 class="sec">Completion log — last ${COMP_DAYS} days</h3>
+    ${renderTable([
+      {label:'Completed',render:l=>`<b>${fmtDate(l.doneDate)}</b>`},
+      {label:'PM',render:l=>`<span class="mono">${esc(l.pmId)}</span>`},
+      {label:'Task',render:l=>`${esc(l.description||'—')}<br><small style="color:var(--muted)">${esc(DB.assetName(l.assetId))}</small>`},
+      {label:'Was due',hideSm:true,render:l=>fmtDate(l.dueDate)},
+      {label:'On time',render:l=>Compliance.onTime(l)?'<span class="chip c-done">Yes</span>'
+        :`<span class="chip c-crit">${l.daysLate}d late</span>`},
+      {label:'By',render:l=>esc(l.by||'—')},
+      {label:'Findings',hideSm:true,render:l=>l.notes
+        ?esc(l.notes.length>60?l.notes.slice(0,60)+'…':l.notes)
+        :'<span style="color:var(--muted)">—</span>'}
+    ],s.logs,{empty:'No PM completions recorded in this period.'})}
+    ${s.done?`<div class="note">${s.documented} of ${s.done} (${s.docPct}%) recorded what was found.</div>`:''}
+  </div>
+  ${people.length?`<div class="card"><h3 class="sec">By technician — last ${COMP_DAYS} days</h3>
+    ${renderTable([
+      {label:'Technician',render:r=>`<b>${esc(r.name)}</b>`},
+      {label:'Completed',num:true,render:r=>r.done},
+      {label:'On time',num:true,render:r=>r.done-r.late},
+      {label:'Late',num:true,render:r=>r.late?`<b style="color:var(--bad)">${r.late}</b>`:'0'},
+      {label:'On-time rate',render:r=>`<span style="color:${pctColor(r.pct)};font-weight:600">${r.pct}%</span>`}
+    ],people)}
+    <div class="note">Late is usually a scheduling or workload problem rather than a person problem —
+    a technician cannot do a PM on a machine that is running production.</div>
+  </div>`:''}`;}
+
+function exportCompliance(){
+  const rows=Compliance.exportRows({assetId:COMP_ASSET});
+  if(!rows.length){toast('No completion records to export');return;}
+  CSV.download('pm-compliance-'+today()+'.csv',CSV.build(Compliance.EXPORT_COLUMNS,rows));
+  toast(rows.length+' completion records exported');}
 
 /* ============================================================
    SPARE PARTS
@@ -1021,7 +1595,7 @@ function editPart(id,presetAsset){
     body:`${safeUrl(p.imageUrl)?`<div class="prev"><img src="${esc(safeUrl(p.imageUrl))}" alt="" onerror="this.parentNode.style.display='none'"/></div>`:''}
       ${F.text('id','Part number',p.id||DB.nextId('parts','P-',4),{required:true,readonly:!isNew})}
       ${F.text('description','Description',p.description,{required:true})}
-      ${F.select('assetId','Used on asset',p.assetId||presetAsset||'',assetOptions())}
+      ${F.select('assetId','Used on equipment',p.assetId||presetAsset||'',assetOptions())}
       <div class="f2">
         <div>${F.text('mfrPn','Manufacturer part number',p.mfrPn)}</div>
         <div>${F.text('vendor','Vendor',p.vendor)}</div>
@@ -1085,7 +1659,7 @@ function renderWO(){
     <div class="stat click" onclick="setWOFilter('unassigned')"><div class="n" style="color:${unassignedN?'var(--bad)':'inherit'}">${unassignedN}</div><div class="l">Nobody assigned</div></div>
   </div>
   <div class="chipset">
-    <button class="btn filled" onclick="editWO()">&#43; New work order</button>
+    <button class="btn filled" onclick="openWorkChooser()">&#43; Raise work</button>
     <div class="vtog">
       <button class="${WO_VIEW==='list'?'on':''}" onclick="setWOView('list')">&#9776; List</button>
       <button class="${WO_VIEW==='calendar'?'on':''}" onclick="setWOView('calendar')">&#128197; Calendar</button>
@@ -1103,7 +1677,7 @@ function renderWO(){
     <h3 class="sec" style="margin-top:16px">${esc(title)}</h3>
     ${renderTable([
       {label:'WO',render:r=>`<b class="mono">${esc(r.id)}</b>`},
-      {label:'Description',render:r=>`<b>${esc(r.description||'—')}</b> ${docChip(r.docUrl,'Reference document')}<br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}${r.pmId?' · from '+esc(r.pmId):''}</small>`},
+      {label:'Description',render:r=>`<b>${esc(r.description||'—')}</b> ${docChip(r.docUrl,'Reference document')}<br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}${r.pmId?' · from '+esc(r.pmId):''}${r.stopId?' · from '+esc(r.stopId):''}</small>`},
       {label:'Type',hideSm:true,render:r=>`<span class="chip c-open">${esc(r.type||'—')}</span>`},
       {label:'Priority',render:r=>prioChip(r.priority)},
       {label:'Assigned to',render:r=>r.assignedTo
@@ -1141,11 +1715,15 @@ function renderWOCalendar(){
       const who=p.tech?' · '+p.tech:'';
       push(p.nextDue,`<div class="ev ev-pm" title="${esc(p.id+' · '+(p.description||'')+who)}"
         onclick="showPMHistory('${jsq(p.id)}')">${esc(p.id)} ${esc((p.description||'').slice(0,18))}</div>`);});
-    /* Past completions show as done, so the calendar becomes a record of
-       what actually happened, not only what is planned. */
     DB.all('pmlogs').forEach(l=>{
       push(l.doneDate,`<div class="ev ev-pmdone" title="${esc(l.pmId+' completed by '+(l.by||''))}"
         onclick="showPMHistory('${jsq(l.pmId)}')">&#10003; ${esc(l.pmId)}</div>`);});}
+  /* Downtime on the calendar makes the bad weeks obvious at a glance. */
+  DB.all('stops').forEach(s=>{
+    const day=String(s.startedAt||'').slice(0,10);
+    if(!day)return;
+    push(day,`<div class="ev ev-stop" title="${esc((s.reason||'')+' · '+DB.assetName(s.assetId))}"
+      onclick="viewStop('${jsq(s.id)}')">&#9888; ${esc(Stops.fmtMins(Stops.minutes(s)))}</div>`);});
   let cells='';
   for(let i=0;i<startPad;i++)cells+='<div class="day pad"></div>';
   for(let d=1;d<=daysInMonth;d++){
@@ -1168,6 +1746,7 @@ function renderWOCalendar(){
       <span><i style="background:var(--warn-c)"></i>In progress</span>
       <span><i style="background:var(--ok-c)"></i>Completed</span>
       ${CAL.pms?'<span><i style="background:var(--pur-c)"></i>PM due</span><span><i style="background:#d7f0dd"></i>PM done</span>':''}
+      <span><i style="background:#ffd9d6"></i>Downtime</span>
     </div></div>`;}
 
 function editWO(id,presetAsset){
@@ -1181,7 +1760,7 @@ function editWO(id,presetAsset){
   const exclude=w.id||'';
   Modal.open({title:isNew?'New work order':'Work order '+w.id,
     body:`${F.text('id','Work order number',w.id||DB.nextId('wos','WO-',4),{required:true,readonly:!isNew})}
-      ${F.select('assetId','Asset',w.assetId||presetAsset||'',assetOptions(),
+      ${F.select('assetId','Equipment',w.assetId||presetAsset||'',assetOptions(),
         {required:true,onchange:`refreshSimilar('${jsq(exclude)}')`})}
       ${asset&&(safeUrl(asset.manualUrl)||safeUrl(asset.drawingUrl))?`<div class="actions" style="margin-top:10px">
         ${docLink(asset.manualUrl,'Machine manual',{cls:'btn tonal sm',icon:'&#128214;'})}
@@ -1212,6 +1791,8 @@ function editWO(id,presetAsset){
       ${F.text('docUrl','Reference document link',w.docUrl,{placeholder:'https://...',hint:LINK_HINT})}
       ${w.pmId?`<div class="note">Generated from PM <b>${esc(w.pmId)}</b>.
         Completing this also records a PM completion.</div>`:''}
+      ${w.stopId?`<div class="note">Raised from downtime record <b>${esc(w.stopId)}</b>.
+        <a href="#" onclick="Modal.close();viewStop('${jsq(w.stopId)}');return false;">Open it</a>.</div>`:''}
       ${!isNew&&w.updatedBy?`<div class="note">Last changed by <b>${esc(w.updatedBy)}</b></div>`:''}`,
     footer:`<button class="btn filled" onclick="saveWO(${isNew})">Save work order</button>
       ${!isNew&&w.status!=='Completed'?`<button class="btn ok" onclick="closeWO('${jsq(w.id)}')">Complete</button>`:''}
@@ -1221,7 +1802,7 @@ function editWO(id,presetAsset){
 function saveWO(isNew){
   const d=F.read();
   if(!d.id){toast('Work order number is required');return;}
-  if(!d.assetId){toast('Pick the asset this work order is for');return;}
+  if(!d.assetId){toast('Pick the equipment this work order is for');return;}
   if(isNew&&DB.get('wos',d.id)){toast('That work order number already exists');return;}
   if(d.docUrl&&!safeUrl(d.docUrl)){toast('The document link is not a valid web address');return;}
   DB.upsert('wos',d);Modal.close();route();toast('Work order '+d.id+' saved');}
@@ -1240,8 +1821,7 @@ function closeWO(id){
   d.completedBy=DB.getWho();
   DB.upsert('wos',d);
   /* A work order generated from a PM is how that PM gets done. Closing it
-     must leave the same evidence as marking the PM complete directly —
-     otherwise compliance quietly under-reports real work. */
+     must leave the same evidence as marking the PM complete directly. */
   const w=DB.get('wos',id);
   if(w&&w.pmId){
     const p=DB.get('pms',w.pmId);
@@ -1262,8 +1842,8 @@ function delWO(id){
    CSV IMPORT (admin)
    ============================================================ */
 let IMPORT={entity:'assets',headers:[],records:[],map:{},filename:''};
-const ENTITY_LABEL={assets:'Assets',pms:'PM Schedule',parts:'Spare Parts',
-  wos:'Work Orders',pmlogs:'PM Completion History'};
+const ENTITY_LABEL={assets:'Equipment',pms:'PM Schedule',parts:'Spare Parts',
+  wos:'Work Orders',pmlogs:'PM Completion History',stops:'Downtime & Defects'};
 
 function renderImport(){
   const fieldList=e=>Object.keys(CSV.ALIAS[e]).join(', ');
@@ -1274,8 +1854,11 @@ function renderImport(){
     <div class="chipset">${Object.keys(ENTITY_LABEL).map(e=>
       `<button class="fchip ${IMPORT.entity===e?'on':''}" onclick="setImportEntity('${e}')">${ENTITY_LABEL[e]}</button>`).join('')}</div>
     <div class="note">Recognised fields for <b>${ENTITY_LABEL[IMPORT.entity]}</b>: <span class="mono">${fieldList(IMPORT.entity)}</span>.
-      ${IMPORT.entity==='pmlogs'?`<br><br><b>Importing past PM completions</b> is how you get compliance
-      history for work done before this system existed. Each row needs at least a PM number and a completed date.`:''}</div>
+      ${IMPORT.entity==='pmlogs'?`<br><br><b>Importing past PM completions</b> gives you compliance
+      history for work done before this system existed.`:''}
+      ${IMPORT.entity==='stops'?`<br><br><b>Importing past downtime</b> from a line-side log book or
+      spreadsheet gives you a baseline on day one. Times can be
+      <span class="mono">YYYY-MM-DD HH:MM</span>. A row with no end time imports as still open.`:''}</div>
   </div>
   <div class="card"><h3 class="sec">2 · Load the file</h3>
     <div class="drop" id="drop" ondragover="event.preventDefault();this.classList.add('over')"
@@ -1336,21 +1919,30 @@ function readCSVFile(file){
     IMPORT.map=CSV.mapHeaders(IMPORT.entity,headers);
     route();toast(records.length+' rows read from '+file.name);};
   r.readAsText(file);}
+
 function runImport(){
   const clean=CSV.applyMap(IMPORT.records,IMPORT.map);
-  const prefix={assets:'',pms:'PM-',parts:'P-',wos:'WO-',pmlogs:'PMC-'}[IMPORT.entity];
-  const pad=IMPORT.entity==='pmlogs'?5:4;
+  const prefix={assets:'',pms:'PM-',parts:'P-',wos:'WO-',pmlogs:'PMC-',stops:'EV-'}[IMPORT.entity];
+  const pad=(IMPORT.entity==='pmlogs'||IMPORT.entity==='stops')?5:4;
   clean.forEach((r,i)=>{
     if(!r.id)r.id=DB.nextId(IMPORT.entity,prefix,pad)+(i?'-'+i:'');
-    /* Imported completions need daysLate computed, since an old
-       spreadsheet will not have it. */
     if(IMPORT.entity==='pmlogs'&&r.dueDate&&r.doneDate&&r.daysLate===undefined){
-      r.daysLate=Compliance.daysBetween(r.dueDate,r.doneDate);}});
+      r.daysLate=Compliance.daysBetween(r.dueDate,r.doneDate);}
+    if(IMPORT.entity==='stops'){
+      /* A spreadsheet writes "2026-09-15 08:30"; the app stores
+         "2026-09-15T08:30". Normalise so durations compute. */
+      ['startedAt','endedAt'].forEach(k=>{
+        if(r[k])r[k]=String(r[k]).trim().replace(' ','T').slice(0,16);});
+      /* Anything that is not clearly a defect is downtime. */
+      const k=String(r.kind||'').toLowerCase();
+      r.kind=k.includes('defect')||k.includes('quality')||k.includes('scrap')?'defect':'downtime';}});
   const {added,updated}=DB.bulkUpsert(IMPORT.entity,clean);
   const ent=IMPORT.entity;
   cancelImport();
   toast(`Imported — ${added} added, ${updated} updated`);
-  location.hash='#/'+({assets:'assets',pms:'pm',parts:'parts',wos:'wo',pmlogs:'compliance'}[ent]);}
+  location.hash='#/'+({assets:'assets',pms:'pm',parts:'parts',wos:'wo',
+    pmlogs:'compliance',stops:'stops'}[ent]);}
+
 function exportCSV(entity){
   const fields=Object.keys(CSV.ALIAS[entity]);
   const rows=DB.all(entity);
@@ -1394,15 +1986,16 @@ function renderUsers(){
     <div class="tablewrap"><table>
       <thead><tr><th>Action</th><th>Maintenance</th><th>Admin</th></tr></thead>
       <tbody>
-        <tr><td>View everything, including compliance</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Create and edit work orders</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>View everything</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Raise work orders and PMs</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Log and close downtime / defects</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Record PM completions</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Add and edit assets, PMs, parts</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Add and edit equipment, PMs, parts</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td><b>Delete</b> anything</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
         <tr><td><b>Import CSV</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
         <tr><td><b>Manage users</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
       </tbody></table></div>
-    <div class="note">Nobody can edit a completion record once written — not even an admin.
+    <div class="note">Nobody can edit a PM completion record once written — not even an admin.
     That is what makes the compliance history worth something.</div>
   </div>`;}
 
@@ -1422,8 +2015,7 @@ function openAddUser(){
         {v:'admin',t:'Admin — everything, including users'}])}
       ${F.text('password','Temporary password','',{required:true,type:'text',autocomplete:'off'})}
       <div id="userMsg"></div>
-      <div class="note">The full name is what appears on completion records, so use the name
-      people actually go by.</div>`,
+      <div class="note">The full name is what appears on records, so use the name people go by.</div>`,
     footer:`<button class="btn filled" onclick="doAddUser()">Create account</button>
       <button class="btn out" onclick="Modal.close()">Cancel</button>`});}
 
@@ -1452,8 +2044,7 @@ function openEditUser(username){
         {v:'admin',t:'Admin — everything, including users'}])}
       ${isMe?'<div class="note">This is your own account. You cannot lock yourself out.</div>':''}
       ${openWos.length?`<div class="note"><b>${openWos.length} open work order${openWos.length===1?'':'s'}</b> assigned.</div>`:''}
-      <div class="note">Renaming does not change completion records already written under the
-      old name — history stays as it was recorded.</div>
+      <div class="note">Renaming does not change records already written under the old name.</div>
       <div id="userMsg"></div>
       <h3 class="sec" style="margin-top:22px">Reset password</h3>
       ${F.text('password','New temporary password','',{type:'text',autocomplete:'off',placeholder:'leave blank to keep current'})}`,
@@ -1490,11 +2081,13 @@ function setUserActive(username,active){
 function renderSettings(){
   const db=DB.raw();
   const s=DB.status();
-  const counts={Assets:db.assets.length,PMs:db.pms.length,Parts:db.parts.length,
-    'Work orders':db.wos.length,'PM completions':db.pmlogs.length};
+  const counts={Equipment:db.assets.length,PMs:db.pms.length,Parts:db.parts.length,
+    'Work orders':db.wos.length,'PM completions':db.pmlogs.length,
+    'Downtime & defects':db.stops.length};
   const total=Object.values(counts).reduce((a,b)=>a+b,0);
   const admin=DB.isAdmin();
   const comp=Compliance.summary({days:90});
+  const noRate=db.assets.filter(a=>DB.num(a.hourlyCost)===null).length;
   return `
   <h1 class="page">Settings</h1>
   <p class="sub">Signed in as <b>${esc(s.who)}</b> · ${esc(ROLE_LABEL[s.role]||s.role)}</p>
@@ -1523,11 +2116,13 @@ function renderSettings(){
       Object.entries(counts).map(([k,v])=>({id:k,k,v})))}
     <div class="note">${total} record${total===1?'':'s'} total ·
       <a href="#/compliance">${comp.pct===null?'no':comp.pct+'%'} PM compliance over 90 days</a>.
-      Completion records are permanent and cannot be edited.</div></div>
+      ${noRate?`<br>${noRate} item${noRate===1?'':'s'} of equipment have no hourly downtime cost set,
+      so their stoppages show time lost but no dollar figure.`:''}</div></div>
   ${admin?`<div class="card"><h3 class="sec">Backup and sample data</h3>
     <div class="actions">
       <button class="btn filled" onclick="Backup.export()">Download backup</button>
       <button class="btn out" onclick="exportCompliance()">Export PM compliance</button>
+      <button class="btn out" onclick="exportStops()">Export downtime</button>
       <button class="btn out" onclick="migrateUp()" ${s.mode==='cloud'?'':'disabled'}>Upload this device's data</button>
       <button class="btn out" onclick="seedSample()">Load sample data</button></div></div>`
   :`<div class="card"><h3 class="sec">Backup</h3>
@@ -1547,7 +2142,7 @@ function reconnect(){
 
 function migrateUp(){
   const db=DB.raw();
-  const n=db.assets.length+db.pms.length+db.parts.length+db.wos.length+db.pmlogs.length;
+  const n=db.assets.length+db.pms.length+db.parts.length+db.wos.length+db.pmlogs.length+db.stops.length;
   if(!n){toast('Nothing on this device to upload');return;}
   confirmDelete(`Upload ${n} records into the shared database?`,()=>{
     toast('Uploading…');
@@ -1563,12 +2158,14 @@ function seedSample(){
   const plus=n=>DB.addDays(d,n);
   const back=n=>DB.addDays(d,-n);
   const me=DB.getWho();
+  const ago=n=>Stops.minutesAgo(n);
+
   DB.bulkUpsert('assets',[
     {id:'3526',name:'Top Roll Assembly',manufacturer:'3Con',model:'TR-900',project:'3527',
-      location:'Ultrasonic weld cell',status:'Active',owner:me,
+      location:'Ultrasonic weld cell',status:'Active',owner:me,hourlyCost:'850',
       manualUrl:'https://example.com/manuals/3526-top-roll.pdf'},
     {id:'3527',name:'Air Compressor #1',manufacturer:'Atlas Copco',model:'GA22',
-      location:'Utilities room',status:'Active',owner:me}]);
+      location:'Utilities room',status:'Active',owner:me,hourlyCost:'400'}]);
   DB.bulkUpsert('pms',[
     {id:'PM-003',assetId:'3526',description:'Inspect and clean sonotrodes/anvils; check weld quality',
       frequency:'weekly',nextDue:plus(2),tech:me,lastDone:back(5)},
@@ -1577,15 +2174,12 @@ function seedSample(){
     {id:'PM-005',assetId:'3526',description:'Lubricate sliding and rotating components',
       frequency:'monthly',nextDue:back(12),tech:me,lastDone:back(42)},
     {id:'PM-007',assetId:'3527',description:'Inspect compressor cooler and drain traps',
-      frequency:'quarterly',nextDue:plus(30)},
-    {id:'PM-009',assetId:'3526',description:'Back up PLC/servo programs',frequency:'annually',nextDue:plus(200)}]);
+      frequency:'quarterly',nextDue:plus(30)}]);
   DB.bulkUpsert('parts',[
     {id:'CT_12672',description:'Sonotrode',assetId:'3526',mfrPn:'6821000797',vendor:'3CON',location:'SP1-I2-B5'},
     {id:'CT_1710',description:'Ultrasonic generator',assetId:'3526',mfrPn:'88194',vendor:'HERRMANN',location:'SP1-E3-B22'},
     {id:'P-1001',description:'Compressor oil filter',assetId:'3527',mfrPn:'GRA-4471',vendor:'Grainger',
       location:'SP1-A1-B2',qty:'12',min:'5',cost:'38.50'}]);
-  /* A realistic mix: mostly on time, one late, one PM never done —
-     so the compliance screen shows something worth looking at. */
   DB.bulkUpsert('pmlogs',[
     {id:'PMC-00001',pmId:'PM-003',assetId:'3526',description:'Inspect and clean sonotrodes/anvils; check weld quality',
       frequency:'weekly',dueDate:back(5),doneDate:back(5),daysLate:0,by:me,hours:'0.5',
@@ -1593,29 +2187,46 @@ function seedSample(){
     {id:'PMC-00002',pmId:'PM-003',assetId:'3526',description:'Inspect and clean sonotrodes/anvils; check weld quality',
       frequency:'weekly',dueDate:back(12),doneDate:back(11),daysLate:1,by:me,hours:'0.5',
       notes:'Minor buildup on anvil, cleaned. No action needed.'},
-    {id:'PMC-00003',pmId:'PM-003',assetId:'3526',description:'Inspect and clean sonotrodes/anvils; check weld quality',
-      frequency:'weekly',dueDate:back(19),doneDate:back(12),daysLate:7,by:me,hours:'0.75',
-      notes:'Late — cell was running production all week. Found nothing abnormal.'},
-    {id:'PMC-00004',pmId:'PM-004',assetId:'3526',description:'Clean/replace main air supply filters',
+    {id:'PMC-00003',pmId:'PM-004',assetId:'3526',description:'Clean/replace main air supply filters',
       frequency:'monthly',dueDate:back(21),doneDate:back(21),daysLate:0,by:me,hours:'1',
-      notes:'Replaced both element filters, drained separator.'},
-    {id:'PMC-00005',pmId:'PM-004',assetId:'3526',description:'Clean/replace main air supply filters',
-      frequency:'monthly',dueDate:back(51),doneDate:back(50),daysLate:1,by:me,hours:'1',
-      notes:'Filters still clean, blew out and reinstalled.'},
-    {id:'PMC-00006',pmId:'PM-005',assetId:'3526',description:'Lubricate sliding and rotating components',
-      frequency:'monthly',dueDate:back(42),doneDate:back(42),daysLate:0,by:me,hours:'0.5',
-      notes:'All points greased.'}]);
+      notes:'Replaced both element filters, drained separator.'}]);
+  /* A realistic mix: closed events with real fixes, one still open,
+     and a repeat so the pattern detection has something to find. */
+  DB.bulkUpsert('stops',[
+    {id:'EV-00001',kind:'downtime',assetId:'3526',reason:'Electrical fault',
+      startedAt:ago(300),endedAt:ago(180),by:me,closedBy:me,
+      detail:'Machine faulted mid-cycle, drive showed an overcurrent alarm.',
+      fixedBy:'Reset the drive and reseated the encoder plug — it was backed out. Ran clean after.'},
+    {id:'EV-00002',kind:'defect',assetId:'3526',reason:'Weld quality',
+      startedAt:ago(1500),endedAt:ago(1440),qty:'14',by:me,closedBy:me,
+      detail:'Pull tests failing on station 2, parts going to scrap.',
+      fixedBy:'Anvil had material buildup. Cleaned both faces and reset trigger pressure to 3.2 bar.'},
+    {id:'EV-00003',kind:'downtime',assetId:'3527',reason:'Mechanical failure',
+      startedAt:ago(2800),endedAt:ago(2620),by:me,closedBy:me,
+      detail:'Compressor tripped and would not restart.',
+      fixedBy:'Head gasket blown. Replaced gasket and torqued to 32 Nm in sequence.'},
+    {id:'EV-00004',kind:'downtime',assetId:'3526',reason:'Electrical fault',
+      startedAt:ago(5200),endedAt:ago(5100),by:me,closedBy:me,
+      detail:'Same overcurrent alarm as before.',
+      fixedBy:'Encoder plug again. Cable-tied the loom so it cannot work loose.'},
+    {id:'EV-00005',kind:'downtime',assetId:'3526',reason:'Electrical fault',
+      startedAt:ago(9000),endedAt:ago(8880),by:me,closedBy:me,
+      detail:'Drive alarm, third time this quarter.',
+      fixedBy:'Reseated encoder plug. Needs a proper connector — raised a work order.'},
+    {id:'EV-00006',kind:'downtime',assetId:'3527',reason:'Waiting on parts',
+      startedAt:ago(45),endedAt:'',by:me,
+      detail:'Oil filter split, no spare in the crib.'}]);
   DB.bulkUpsert('wos',[
     {id:'WO-1002',assetId:'3526',description:'Replace worn sonotrode on station 2',type:'Repair',
       priority:'Medium',requestedBy:me,assignedTo:me,
       dateRequested:back(22),dateCompleted:back(21),hours:'2.5',cost:'1250',
       status:'Completed',cause:'Wear / end of life',partsUsed:'CT_12672',
       notes:'Sonotrode face pitted. Swapped in CT_12672, retorqued stack to 45 Nm.'},
-    {id:'WO-1003',assetId:'3526',description:'Weld quality drift — investigate generator output',
-      type:'Troubleshoot',priority:'High',requestedBy:'Quality',
+    {id:'WO-1003',assetId:'3526',description:'Fit a locking connector to the encoder cable',
+      type:'Improvement',priority:'High',requestedBy:me,
       dateRequested:back(2),dateDue:plus(3),status:'Open',cause:'To be determined'}]);
   route();
-  toast('Sample data loaded — including PM completion history');}
+  toast('Sample data loaded — including downtime with a repeating fault');}
 
 /* ============================================================
    BOOT
@@ -1637,4 +2248,12 @@ function seedSample(){
       DB.refresh().then(()=>route()).catch(()=>{});}});
   window.addEventListener('online',()=>{
     if(DB.status().mode!=='cloud')reconnect();});
+  /* Open stoppages count up live. One minute is precise enough and
+     cheap — it only re-renders when a stoppage is actually open. */
+  setInterval(()=>{
+    if(document.hidden)return;
+    if(!Stops.open().length)return;
+    const h=(location.hash||'').replace('#/','').split('/')[0];
+    if(['home','dashboard','stops','asset','assets'].includes(h))route();
+  },60000);
 })();

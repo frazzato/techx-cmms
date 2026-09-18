@@ -61,13 +61,17 @@ const F={
         ${opts.oninput?`oninput="${opts.oninput}"`:''}/>
       ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
   num(name,label,val,opts={}){
-    return `<label for="f_${name}">${esc(label)}</label>
+    return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
       <input id="f_${name}" name="${name}" type="number" step="${opts.step||'any'}" value="${esc(val??'')}"
         ${opts.placeholder?`placeholder="${esc(opts.placeholder)}"`:''}/>
       ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
   date(name,label,val,opts={}){
     return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
       <input id="f_${name}" name="${name}" type="date" value="${esc(val??'')}"/>
+      ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
+  datetime(name,label,val,opts={}){
+    return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
+      <input id="f_${name}" name="${name}" type="datetime-local" value="${esc(val??'')}"/>
       ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
   select(name,label,val,options,opts={}){
     const o=options.map(x=>{
@@ -100,6 +104,7 @@ const F={
     document.querySelectorAll('#drawerBody [name]').forEach(el=>{out[el.name]=el.value.trim();});
     return out;}
 };
+/* Label says Equipment; the stored collection is still "assets". */
 function assetOptions(){
   return [{v:'',t:'— none —'}].concat(
     DB.all('assets').map(a=>({v:a.id,t:a.id+' · '+a.name})));
@@ -128,7 +133,17 @@ function fmtDateTime(iso){
   if(isNaN(d))return esc(String(iso).slice(0,10));
   return d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
 }
+/* Local "YYYY-MM-DDTHH:MM" shown as "Sep 15, 2:30 PM". */
+function fmtLocal(local){
+  if(!local)return '—';
+  const m=String(local).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if(!m)return esc(local);
+  const d=new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5]);
+  if(isNaN(d))return esc(local);
+  return d.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+}
 function money(v){const n=DB.num(v);return n===null?'—':'$'+n.toFixed(2);}
+function money0(n){return '$'+Math.round(n).toLocaleString();}
 function today(){return new Date().toISOString().slice(0,10);}
 function confirmDelete(msg,fn){if(confirm(msg))fn();}
 
