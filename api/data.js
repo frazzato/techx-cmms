@@ -9,21 +9,24 @@
    FUNCTION_INVOCATION_FAILED with "Cannot find package".
 
    Collections:
-     assets, pms, parts, wos — the working records
-     pmlogs                  — PM completion history (append-only)
+     assets  — equipment (label changed, storage key did not)
+     pms, parts, wos
+     pmlogs  — PM completion history (append-only)
+     stops   — downtime and defect events
 
-   pmlogs is a separate collection on purpose. Storing history as
-   an array inside each PM would lose entries: the jsonb merge
-   REPLACES a key rather than appending, so two people completing
-   PMs at the same time would clobber each other. An audit trail
-   cannot work that way. One row per completion, never updated.
+   pmlogs is append-only on purpose. Storing history as an array
+   inside each PM would lose entries: the jsonb merge REPLACES a
+   key rather than appending, so two people completing PMs at the
+   same time would clobber each other. An audit trail cannot work
+   that way. One row per completion, never updated.
+
+   Stoppages are NOT append-only — an open stoppage has to be
+   editable so somebody can close it when the machine runs again.
    ============================================================ */
 
 import crypto from 'node:crypto';
 
-const COLLECTIONS = ['assets', 'pms', 'parts', 'wos', 'pmlogs'];
-/* Records that are evidence, not working data. They may be created
-   but never edited, and only an admin may remove one. */
+const COLLECTIONS = ['assets', 'pms', 'parts', 'wos', 'pmlogs', 'stops'];
 const APPEND_ONLY = ['pmlogs'];
 const ROLES = ['maintenance', 'admin'];
 const SESSION_DAYS = 30;
@@ -139,7 +142,7 @@ async function readAll(sql) {
   const rows = await sql`
     SELECT collection, id, data, updated_by, updated_at
     FROM records WHERE deleted = false ORDER BY collection, id`;
-  const out = { assets: [], pms: [], parts: [], wos: [], pmlogs: [] };
+  const out = { assets: [], pms: [], parts: [], wos: [], pmlogs: [], stops: [] };
   rows.forEach(r => {
     /* updated_by comes from the session, so it cannot be spoofed. */
     if (out[r.collection]) out[r.collection].push(Object.assign({}, r.data, {
@@ -264,8 +267,7 @@ export default async function handler(req, res) {
         if (!record || !record.id) return res.status(400).json({ error: 'Record needs an id' });
 
         /* An audit record is written once and never rewritten. Silently
-           allowing an edit would make the whole history worthless as
-           evidence. */
+           allowing an edit would make the whole history worthless. */
         if (APPEND_ONLY.includes(collection)) {
           const existing = await sql`
             SELECT 1 FROM records WHERE collection = ${collection} AND id = ${String(record.id)}`;
@@ -367,6 +369,7 @@ export default async function handler(req, res) {
         if (body.name !== undefined)
           await sql`UPDATE users SET full_name = ${String(body.name).trim()} WHERE username = ${username}`;
         if (body.role !== undefined && ROLES.includes(body.role)) {
+          /* Never let the last admin be demoted — it would lock everyone out. */
           if (rows[0].role === 'admin' && body.role !== 'admin') {
             const admins = await sql`SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin' AND active = true`;
             if (admins[0].n <= 1) return res.status(400).json({ error: 'This is the only admin — promote someone else first' });
