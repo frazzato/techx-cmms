@@ -1,27 +1,16 @@
 /* ============================================================
    insights.js — Smart Assist
-   ------------------------------------------------------------
-   Finds patterns in what the plant has already recorded. No
-   language model: every line shown is a real record you can open.
-
-   It searches two sources now:
-     work orders  — repairs that were carried out
-     stoppages    — downtime and defects, and what got it running
-
-   A stoppage with "what fixed it" filled in is often the most
-   useful thing in the system, because it was written by someone
-   standing at the machine while it was still broken.
+   Searches work orders AND stoppages. No language model: every
+   line shown is a real record you can open.
    ============================================================ */
 const Insights = (() => {
-  const STOP = new Set([
-    'the','a','an','and','or','but','if','of','at','by','for','with','about',
+  const STOP = new Set(['the','a','an','and','or','but','if','of','at','by','for','with','about',
     'to','from','in','on','is','was','are','were','be','been','being','it','its',
     'this','that','these','those','as','so','then','than','there','here','when',
     'we','i','he','she','they','you','our','their','his','her','my','me',
     'not','no','yes','do','did','does','done','has','have','had','will','would',
     'can','could','should','may','might','must','again','also','very','just',
-    'due','per','via','after','before','during','while','up','down','out','off'
-  ]);
+    'due','per','via','after','before','during','while','up','down','out','off']);
   const SYNONYM = {
     leaking:'leak',leaks:'leak',leaked:'leak',
     broken:'break',broke:'break',breaking:'break',breakage:'break',
@@ -45,27 +34,19 @@ const Insights = (() => {
     sonotrodes:'sonotrode',anvils:'anvil',
     bad:'defect',defects:'defect',defective:'defect',
     scrap:'defect',reject:'defect',rejects:'defect',
-    pneumatic:'air',
-    electrical:'electric',wiring:'electric',wire:'electric',
-    hydraulics:'hydraulic',
-    drifting:'drift',drifted:'drift',
-    stopped:'stop',stopping:'stop',stoppage:'stop',
-    downtime:'stop',dead:'stop'
-  };
+    pneumatic:'air',electrical:'electric',wiring:'electric',wire:'electric',
+    hydraulics:'hydraulic',drifting:'drift',drifted:'drift',
+    stopped:'stop',stopping:'stop',stoppage:'stop',downtime:'stop',dead:'stop'};
   function tokenize(text){
     return String(text||'').toLowerCase()
       .replace(/[^a-z0-9\s-]/g,' ').split(/[\s-]+/)
       .filter(w=>w.length>2&&!STOP.has(w)).map(w=>SYNONYM[w]||w);}
   function tokenSet(text){return new Set(tokenize(text));}
-
-  /* Text that describes a record, whatever kind it is. */
   const woText=w=>(w.description||'')+' '+(w.notes||'');
   const stopText=s=>(s.reason||'')+' '+(s.detail||'')+' '+(s.fixedBy||'');
-
   function buildIdf(docs){
     const docFreq=new Map();
-    docs.forEach(text=>{
-      tokenSet(text).forEach(t=>docFreq.set(t,(docFreq.get(t)||0)+1));});
+    docs.forEach(text=>{tokenSet(text).forEach(t=>docFreq.set(t,(docFreq.get(t)||0)+1));});
     const n=Math.max(docs.length,1);
     return t=>Math.log((n+1)/((docFreq.get(t)||0)+1))+1;}
   function weightedOverlap(aSet,bSet,idf){
@@ -73,25 +54,20 @@ const Insights = (() => {
     aSet.forEach(t=>{const w=idf(t);total+=w;
       if(bSet.has(t)){shared+=w;if(w>best)best=w;}});
     return{ratio:total>0?shared/total:0,best};}
-
   /* Below MIN_CORPUS there is not enough history for word-rarity to
      mean anything, so judge on overlap alone. */
   const DISTINCTIVE=1.5, MIN_CORPUS=4;
-
-  /* Machines of the same make and model tend to fail the same way. */
   function sameModelSet(assetId){
     const asset=DB.get('assets',assetId);
     if(!asset||!asset.model)return new Set();
     return new Set(DB.all('assets').filter(a=>a.id!==assetId&&a.model&&a.model===asset.model&&
       a.manufacturer===asset.manufacturer).map(a=>a.id));}
-
   function ageDaysOf(dateish){
     if(!dateish)return null;
     const d=new Date(String(dateish).slice(0,10)+'T00:00:00');
     if(isNaN(d))return null;
     return Math.round((new Date()-d)/86400000);}
 
-  /* ---------- work orders ---------- */
   function similarRepairs(opts={}){
     const {assetId='',description='',cause='',excludeId='',limit=5}=opts;
     const done=DB.all('wos').filter(w=>DB.isDone(w)&&w.id!==excludeId&&(w.description||w.notes));
@@ -124,10 +100,8 @@ const Insights = (() => {
       return wordMatch||causeMatch;
     }).sort((a,b)=>b.score-a.score).slice(0,limit);}
 
-  /* ---------- stoppages ----------
-     Only closed records with a real "what fixed it" are offered. An
-     open stoppage has no lesson yet, and one closed without a fix
-     note teaches nobody anything. */
+  /* Only closed records with a real fix note. An open stoppage has no
+     lesson yet, and one closed blank teaches nobody anything. */
   function similarStops(opts={}){
     const {assetId='',description='',reason='',excludeId='',limit=5}=opts;
     const src=typeof Stops!=='undefined'?Stops.all():DB.all('stops');
@@ -162,10 +136,8 @@ const Insights = (() => {
       return wordMatch||reasonMatch;
     }).sort((a,b)=>b.score-a.score).slice(0,limit);}
 
-  /* ---------- everything, merged ----------
-     One ranked list across both sources. A technician does not care
-     whether the answer came from a work order or a downtime record,
-     only whether someone has solved this before. */
+  /* One ranked list across both. A technician does not care whether
+     the answer came from a work order or a downtime record. */
   function findLessons(opts={}){
     const limit=opts.limit||8;
     const wos=similarRepairs(Object.assign({},opts,{limit}));
@@ -228,8 +200,6 @@ const Insights = (() => {
       meanGap,topPeople,undocumented,
       lastRepair:dates.length?dates[dates.length-1].toISOString().slice(0,10):''};}
 
-  /* Documentation health across both sources — this is what decides
-     whether any of the above is worth reading. */
   function dataQuality(){
     const done=DB.all('wos').filter(DB.isDone);
     const noNotes=done.filter(w=>!w.notes||w.notes.trim().length<15).length;

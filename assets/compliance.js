@@ -1,21 +1,17 @@
 /* ============================================================
    compliance.js — PM completion history and compliance
-   Every completion writes one immutable record. Nothing here
-   ever rewrites one — that is what makes it evidence.
-   daysLate is frozen at write time because the schedule can
-   change later; the history must describe what actually
-   happened, not what the current schedule implies.
+   Every completion writes one immutable record. daysLate is
+   frozen at write time because the schedule can change later;
+   the history must describe what actually happened.
    ============================================================ */
 const Compliance = (() => {
   /* A PM due Friday and done Monday is normal shop reality. */
   const GRACE_DAYS = 2;
-
   function daysBetween(fromIso,toIso){
     if(!fromIso||!toIso)return null;
     const a=new Date(fromIso+'T00:00:00'),b=new Date(toIso+'T00:00:00');
     if(isNaN(a)||isNaN(b))return null;
     return Math.round((b-a)/86400000);}
-
   function buildLog(pm,opts={}){
     const doneDate=opts.doneDate||new Date().toISOString().slice(0,10);
     const dueDate=pm.nextDue||'';
@@ -24,13 +20,11 @@ const Compliance = (() => {
       description:pm.description||'',frequency:pm.frequency||'',
       dueDate,doneDate,daysLate:late===null?null:late,
       by:opts.by||'',hours:opts.hours||'',notes:opts.notes||'',woId:opts.woId||''};}
-
   const onTime=log=>log.daysLate===null||log.daysLate<=GRACE_DAYS;
   const logsFor=pmId=>DB.all('pmlogs').filter(l=>l.pmId===pmId)
     .sort((a,b)=>(b.doneDate||'').localeCompare(a.doneDate||''));
   const logsForAsset=assetId=>DB.all('pmlogs').filter(l=>l.assetId===assetId)
     .sort((a,b)=>(b.doneDate||'').localeCompare(a.doneDate||''));
-
   function summary(opts={}){
     const {days=90,assetId='',pmId='',person=''}=opts;
     const cutoff=new Date();cutoff.setDate(cutoff.getDate()-days);
@@ -55,7 +49,6 @@ const Compliance = (() => {
       hours,documented,docPct:done?Math.round((documented/done)*100):0,
       overdueNow:overdueNow.length,overdueList:overdueNow,
       logs:logs.sort((a,b)=>(b.doneDate||'').localeCompare(a.doneDate||''))};}
-
   function pmRecord(pmId){
     const pm=DB.get('pms',pmId);
     const logs=logsFor(pmId);
@@ -74,7 +67,6 @@ const Compliance = (() => {
       drifting:actualInterval&&scheduled?actualInterval>scheduled*1.4:false,
       first:dates.length?dates[0].toISOString().slice(0,10):'',
       last:dates.length?dates[dates.length-1].toISOString().slice(0,10):''};}
-
   function byPerson(days=90){
     const s=summary({days});
     const map=new Map();
@@ -88,12 +80,10 @@ const Compliance = (() => {
     return Array.from(map.values())
       .map(e=>Object.assign(e,{pct:e.done?Math.round(((e.done-e.late)/e.done)*100):0}))
       .sort((a,b)=>b.done-a.done);}
-
   /* A schedule never once completed is what an auditor finds first. */
   function neverDone(){
     const seen=new Set(DB.all('pmlogs').map(l=>l.pmId));
     return DB.all('pms').filter(p=>!seen.has(p.id));}
-
   function exportRows(opts={}){
     const s=summary(Object.assign({days:3650},opts));
     const v=x=>(x===null||x===undefined)?'':String(x);
@@ -105,10 +95,8 @@ const Compliance = (() => {
       'Days Late':l.daysLate===null||l.daysLate===undefined?'':String(l.daysLate),
       'On Time':onTime(l)?'Yes':'No','Completed By':v(l.by),
       'Hours':v(l.hours),'Work Order':v(l.woId),'Notes':v(l.notes)}));}
-
   const EXPORT_COLUMNS=['PM Number','Equipment ID','Equipment','Task','Frequency','Due Date',
     'Completed Date','Days Late','On Time','Completed By','Hours','Work Order','Notes'];
-
   return{GRACE_DAYS,buildLog,onTime,logsFor,logsForAsset,
     summary,pmRecord,byPerson,neverDone,exportRows,EXPORT_COLUMNS,daysBetween};
 })();

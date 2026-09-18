@@ -23,10 +23,8 @@ const CSV = (() => {
     return{headers,records};}
   /* Excel and Sheets execute a cell that begins with = + - or @, so a
      technician's note reading "=cmd|..." would run when someone opens
-     the export. Prefixing with a quote renders it as plain text. These
-     exports are written to be opened by people outside maintenance. */
-  function neutralise(s){
-    return /^[=+\-@\t\r]/.test(s)?"'"+s:s;}
+     the export. These exports go to people outside maintenance. */
+  function neutralise(s){return /^[=+\-@\t\r]/.test(s)?"'"+s:s;}
   function esc(v){
     const s=neutralise(v===null||v===undefined?'':String(v));
     return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}
@@ -103,8 +101,6 @@ const CSV = (() => {
       hours:['hours','laborhours','time'],
       notes:['notes','comments','remarks','findings'],
       woId:['workorder','workordernumber','wo','wonumber']},
-    /* Historical downtime can be imported from an old spreadsheet or a
-       line-side log book, which is how you get a baseline on day one. */
     stops:{id:['id','recordid','eventid','stopid'],
       kind:['type','kind','category','eventtype'],
       assetId:['assetid','asset','assetnumber','equipmentid','equipment','machine'],

@@ -33,18 +33,30 @@ a{color:var(--pri);text-decoration:none}
 .connchip.warn{background:var(--warn-c);color:var(--warn)}
 .connchip.off{background:var(--surf-3);color:var(--muted)}
 
-/* ---------- layout ---------- */
+/* ---------- sidebar ----------
+   Work and Problems carry the same colours as the two big buttons
+   on Home, so the menu reads as the same pair of choices. */
 .shell{display:flex;min-height:calc(100vh - 64px)}
 .rail{width:96px;padding:14px 0;display:flex;flex-direction:column;align-items:center;gap:2px;
   position:sticky;top:64px;height:calc(100vh - 64px);overflow-y:auto;flex-shrink:0}
 .rail .nav{width:80px;padding:6px 0;display:flex;flex-direction:column;align-items:center;gap:5px;
-  color:var(--muted);cursor:pointer}
+  color:var(--muted);cursor:pointer;position:relative}
 .rail .ico{width:56px;height:32px;border-radius:16px;display:grid;place-items:center;font-size:18px}
 .rail .nav:hover .ico{background:var(--surf-3)}
 .rail .nav.active .ico{background:var(--pri-cont);color:var(--on-pri-cont)}
 .rail .nav.active{color:var(--ink);font-weight:500}
 .rail .lbl{font-size:10.5px;text-align:center;line-height:1.2}
 .rail hr{width:52px;border:none;border-top:1px solid var(--line);margin:8px 0}
+/* the two mirrored actions */
+.rail .accent-work .ico{background:var(--pri-cont);color:var(--on-pri-cont)}
+.rail .accent-work{color:var(--on-pri-cont);font-weight:500}
+.rail .accent-work.active .ico{background:var(--pri);color:#fff}
+.rail .accent-stop .ico{background:var(--bad-c);color:var(--bad)}
+.rail .accent-stop{color:var(--bad);font-weight:500}
+.rail .accent-stop.active .ico{background:var(--bad);color:#fff}
+.navdot{position:absolute;top:-2px;right:12px;min-width:18px;height:18px;border-radius:9px;
+  background:var(--bad);color:#fff;font-size:10.5px;font-weight:700;display:grid;place-items:center;
+  padding:0 5px;border:2px solid var(--bg)}
 .content{flex:1;padding:22px 28px 80px;max-width:1460px;min-width:0}
 
 /* ---------- type ---------- */
@@ -103,6 +115,19 @@ h3.sec{font-size:12.5px;font-weight:500;color:var(--muted);letter-spacing:.6px;
 .bigaction .ba-txt span{font-size:12.5px;opacity:.9}
 .bigaction.ghost .ba-txt span{color:var(--muted)}
 
+/* ---------- work tabs ---------- */
+.worktabs{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin-bottom:20px}
+.worktab{display:flex;align-items:center;gap:14px;text-align:left;width:100%;
+  background:var(--surf);border:2px solid var(--line);border-radius:var(--r);
+  padding:14px 18px;cursor:pointer;transition:.13s}
+.worktab:hover{border-color:var(--pri-cont);box-shadow:var(--sh)}
+.worktab.on{border-color:var(--pri);background:var(--info-c);box-shadow:var(--sh)}
+.worktab .wt-ic{font-size:24px;line-height:1;flex-shrink:0}
+.worktab .wt-txt{display:flex;flex-direction:column;gap:2px;min-width:0}
+.worktab .wt-txt b{font-size:15.5px;font-weight:600}
+.worktab .wt-txt span{font-size:12px;color:var(--muted)}
+.worktab.on .wt-txt b{color:var(--on-pri-cont)}
+
 /* ---------- chooser ---------- */
 .chooser{display:flex;flex-direction:column;gap:12px;margin-top:6px}
 .choice{display:flex;align-items:center;gap:16px;text-align:left;width:100%;
@@ -139,18 +164,7 @@ h3.sec{font-size:12.5px;font-weight:500;color:var(--muted);letter-spacing:.6px;
 .quicktime{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px}
 .quicktime .fchip{font-size:12.5px;padding:8px 14px}
 
-/* ---------- home tiles ---------- */
-.hub{display:grid;gap:18px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-bottom:22px}
-.tile{background:var(--surf);border-radius:var(--r);padding:24px;box-shadow:var(--sh);
-  cursor:pointer;transition:.15s;border:2px solid transparent;display:block;color:inherit}
-.tile:hover{box-shadow:var(--sh2);border-color:var(--pri-cont)}
-.tile .ic{width:52px;height:52px;border-radius:16px;display:grid;place-items:center;
-  font-size:24px;margin-bottom:14px;background:var(--pri-cont);color:var(--on-pri-cont)}
-.tile h2{font-size:19px;font-weight:500;margin:0 0 6px}
-.tile p{color:var(--muted);margin:0 0 14px;font-size:13px;line-height:1.6}
-.tile ul{margin:0;padding-left:18px;color:var(--muted);font-size:12.5px;line-height:1.9}
-.tile.smart .ic{background:var(--pur-c);color:var(--pur)}
-.tile.smart:hover{border-color:var(--pur-c)}
+/* ---------- pills ---------- */
 .pill{display:inline-block;background:var(--surf-2);border:1px solid var(--line);border-radius:20px;
   padding:7px 14px;font-size:13px;margin:0 8px 8px 0;cursor:pointer;color:inherit}
 .pill:hover{background:var(--pri-cont);border-color:var(--pri-cont)}
@@ -342,7 +356,7 @@ input[readonly]{background:var(--surf-2)}
 .qrfail span{color:var(--muted)}
 
 @media print{
-  .appbar,.rail,.hide-print,.chipset,h1.page,p.sub,.downbanner,.bigactions{display:none!important}
+  .appbar,.rail,.hide-print,.chipset,h1.page,p.sub,.downbanner,.bigactions,.worktabs{display:none!important}
   body{background:#fff}
   .shell{display:block}
   .content{padding:0;max-width:none}
@@ -362,6 +376,7 @@ input[readonly]{background:var(--surf-2)}
   .rail hr{display:none}
   .rail .nav{width:auto;min-width:64px;padding:4px 6px}
   .rail .ico{width:44px;height:28px;font-size:16px}
+  .navdot{right:6px;top:0}
   .shell{flex-direction:column}
   .content{padding:14px 12px 60px}
   .f2{grid-template-columns:1fr}
@@ -383,4 +398,5 @@ input[readonly]{background:var(--surf-2)}
   .bigaction .ba-txt b{font-size:15px}
   .downrow{padding:10px 12px}
   .downrow .btn{width:100%}
+  .worktab{padding:12px 14px}
 }

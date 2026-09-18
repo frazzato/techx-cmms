@@ -1,10 +1,21 @@
 /* ============================================================
    app.js — router + screens
 
-   NAMING: the user-facing word is "Equipment" everywhere. The
-   stored collection is still "assets" and the route is still
-   #/asset/… — renaming those would orphan existing records and
-   break every QR tag already printed and stuck on a machine.
+   NAVIGATION mirrors the home screen. Home offers two actions —
+   "Raise work" and "Report a problem" — so the sidebar carries
+   the same two ideas rather than four separate entries:
+
+     Work      = Work Orders + PM Plan, tabbed on one screen
+     Problems  = downtime and defects
+
+   Work Orders and PM keep their own screens, their own data and
+   their own behaviour. Only the way in is shared, so a technician
+   does not have to know which menu a job lives under.
+
+   NAMING: the user-facing word is "Equipment". The stored
+   collection is still "assets" and the route is still #/asset/… —
+   renaming those would orphan existing records and break every QR
+   tag already stuck on a machine.
    ============================================================ */
 
 const FREQS = ['daily','weekly','biweekly','monthly','quarterly','semiannual','annually'];
@@ -20,9 +31,12 @@ let SEARCH='', WO_VIEW='list', WO_FILTER='all', PM_FILTER='all';
 let CAL={y:new Date().getFullYear(),m:new Date().getMonth(),pms:true};
 let USERS=[], SMART_Q='', SMART_ASSET='', COMP_DAYS=90, COMP_ASSET='';
 let STOP_DAYS=30, STOP_KIND='', STOP_ASSET='';
+/* Which half of the combined Work screen is showing. */
+let WORK_TAB='wo';
 
 const ROUTES={home:renderHome,dashboard:renderDashboard,assets:renderAssets,asset:renderAssetDetail,
-  pm:renderPM,parts:renderParts,wo:renderWO,qr:renderQR,smart:renderSmart,compliance:renderCompliance,
+  work:renderWork,pm:renderWork,wo:renderWork,
+  parts:renderParts,qr:renderQR,smart:renderSmart,compliance:renderCompliance,
   stops:renderStops,import:renderImport,users:renderUsers,settings:renderSettings,login:renderLogin};
 const ADMIN_ROUTES=['import','users'];
 
@@ -32,13 +46,24 @@ function route(){
   const name=parts[0];
   const param=parts[1]?decodeURIComponent(parts[1]):null;
   const st=DB.status();
+
+  /* #/wo and #/pm still work — old bookmarks, links inside the app
+     and anything already shared keep resolving. They simply open the
+     combined screen on the right tab. */
+  if(name==='wo')WORK_TAB='wo';
+  if(name==='pm')WORK_TAB='pm';
+
   if(!st.signedIn&&name!=='login'){
     document.getElementById('view').innerHTML=renderLogin();updateChrome();return;}
   if(ADMIN_ROUTES.includes(name)&&!DB.isAdmin()){
     document.getElementById('view').innerHTML=renderNoAccess(name);updateChrome();return;}
+
   const fn=ROUTES[name]||renderHome;
+  /* One nav item lights up for the whole Work family. */
+  const navFor=['work','wo','pm'].includes(name)?'work'
+    :name==='asset'?'assets':name;
   document.querySelectorAll('.rail .nav').forEach(a=>
-    a.classList.toggle('active',a.dataset.s===name||(name==='asset'&&a.dataset.s==='assets')));
+    a.classList.toggle('active',a.dataset.s===navFor));
   document.getElementById('view').innerHTML=fn(param);
   updateChrome();window.scrollTo(0,0);}
 window.addEventListener('hashchange',route);
@@ -46,7 +71,7 @@ window.addEventListener('hashchange',route);
 document.getElementById('globalSearch').addEventListener('input',e=>{
   SEARCH=e.target.value.toLowerCase().trim();
   const h=(location.hash||'').replace('#/','').split('/')[0];
-  if(SEARCH&&!['assets','parts','wo','pm'].includes(h)){location.hash='#/assets';return;}
+  if(SEARCH&&!['assets','parts','work','wo','pm'].includes(h)){location.hash='#/assets';return;}
   route();});
 
 function matches(obj,fields){
@@ -66,6 +91,13 @@ function renderNoAccess(name){
 function updateChrome(){
   const admin=DB.isAdmin();
   document.querySelectorAll('.rail .adminonly').forEach(el=>{el.style.display=admin?'':'none';});
+  /* A red dot on the Problems nav item whenever something is down —
+     visible from every screen without having to open anything. */
+  const dot=document.getElementById('navStopDot');
+  if(dot){
+    const n=(typeof Stops!=='undefined')?Stops.open().length:0;
+    dot.textContent=n?String(n):'';
+    dot.style.display=n?'':'none';}
   const el=document.getElementById('connBadge');
   if(!el)return;
   const s=DB.status();
@@ -173,17 +205,8 @@ function doChangePassword(){
     .catch(e=>show(e.message||'Could not change password'));}
 
 /* ============================================================
-   THE TWO ENTRY POINTS
-   ------------------------------------------------------------
-   A technician with a problem in front of them should not have to
-   know which menu it lives under. Two buttons, each asking one
-   plain question, then straight into the right form.
-
-   These choosers only appear where the decision has not been made
-   yet. The "+ New PM" button on the PM screen stays direct —
-   adding a choice step there would be a wasted tap.
+   THE TWO ENTRY POINTS — same wording as the home buttons
    ============================================================ */
-
 function openWorkChooser(presetAsset){
   const a=presetAsset?`'${jsq(presetAsset)}'`:'';
   Modal.open({
@@ -191,17 +214,13 @@ function openWorkChooser(presetAsset){
     body:`<div class="chooser">
       <button class="choice" onclick="Modal.close();editWO(null,${a})">
         <div class="choice-ic ic-wo">&#129534;</div>
-        <div class="choice-txt">
-          <b>Work Order</b>
-          <span>Something broke, needs fixing, or needs looking at</span>
-        </div>
+        <div class="choice-txt"><b>Work Order</b>
+          <span>Something broke, needs fixing, or needs looking at</span></div>
       </button>
       <button class="choice" onclick="Modal.close();editPM(null,${a})">
         <div class="choice-ic ic-pm">&#128197;</div>
-        <div class="choice-txt">
-          <b>Preventive Maintenance</b>
-          <span>A scheduled job that repeats on a frequency</span>
-        </div>
+        <div class="choice-txt"><b>Preventive Maintenance</b>
+          <span>A scheduled job that repeats on a frequency</span></div>
       </button>
     </div>
     <div class="note">A work order happens once. A PM comes back every week,
@@ -215,38 +234,200 @@ function openStopChooser(presetAsset){
     body:`<div class="chooser">
       <button class="choice" onclick="Modal.close();reportStop('downtime',${a})">
         <div class="choice-ic ic-down">&#9888;</div>
-        <div class="choice-txt">
-          <b>Downtime</b>
-          <span>The machine stopped — a fault, a jam, waiting on something</span>
-        </div>
+        <div class="choice-txt"><b>Downtime</b>
+          <span>The machine stopped — a fault, a jam, waiting on something</span></div>
       </button>
       <button class="choice" onclick="Modal.close();reportStop('defect',${a})">
         <div class="choice-ic ic-def">&#128683;</div>
-        <div class="choice-txt">
-          <b>Defect</b>
-          <span>The machine ran but produced bad parts</span>
-        </div>
+        <div class="choice-txt"><b>Defect</b>
+          <span>The machine ran but produced bad parts</span></div>
       </button>
     </div>
     <div class="note">Both record how long production was lost. The only
     difference is whether the machine failed or the process did.</div>`,
     footer:`<button class="btn out" onclick="Modal.close()">Cancel</button>`});}
 
+/* The two big buttons, reused on Home and at the top of Work and
+   Problems so the same pair is always within reach. */
+function bigActions(presetAsset){
+  const a=presetAsset?`'${jsq(presetAsset)}'`:'';
+  return `<div class="bigactions">
+    <button class="bigaction" onclick="openWorkChooser(${a})">
+      <div class="ba-ic">&#128736;</div>
+      <div class="ba-txt"><b>Raise work</b><span>Work order or PM</span></div>
+    </button>
+    <button class="bigaction bad" onclick="openStopChooser(${a})">
+      <div class="ba-ic">&#9888;</div>
+      <div class="ba-txt"><b>Report a problem</b><span>Downtime or defect</span></div>
+    </button>
+  </div>`;}
+
+/* ============================================================
+   WORK — Work Orders and PM under one nav item
+   ------------------------------------------------------------
+   Two tabs on one screen. Both keep their own table, filters and
+   behaviour exactly as before; only the entry point is shared.
+   Switching tab updates the hash so the back button and a shared
+   link both land where the person expects.
+   ============================================================ */
+function setWorkTab(tab){
+  WORK_TAB=tab;
+  /* Keep the address bar honest without pushing a history entry
+     for every tab flick. */
+  const want='#/'+(tab==='pm'?'pm':'wo');
+  if(location.hash!==want){location.hash=want;return;}
+  route();}
+
+function renderWork(){
+  const wos=DB.all('wos');
+  const pms=DB.all('pms');
+  const openN=wos.filter(DB.isOpen).length;
+  const overdueN=pms.filter(p=>(DB.daysUntil(p.nextDue)??99)<0).length;
+  return `
+  <h1 class="page">Work</h1>
+  <p class="sub">Work orders and preventive maintenance.</p>
+
+  ${bigActions()}
+
+  <div class="worktabs">
+    <button class="worktab ${WORK_TAB==='wo'?'on':''}" onclick="setWorkTab('wo')">
+      <span class="wt-ic">&#129534;</span>
+      <span class="wt-txt"><b>Work Orders</b><span>${openN} pending</span></span>
+    </button>
+    <button class="worktab ${WORK_TAB==='pm'?'on':''}" onclick="setWorkTab('pm')">
+      <span class="wt-ic">&#128197;</span>
+      <span class="wt-txt"><b>PM Plan</b><span>${pms.length} scheduled${overdueN?' · '+overdueN+' overdue':''}</span></span>
+    </button>
+  </div>
+
+  ${WORK_TAB==='pm'?renderPMBody():renderWOBody()}`;}
+
+/* ---------- work orders ---------- */
+function setWOView(v){WO_VIEW=v;route();}
+function setWOFilter(f){WO_FILTER=f;WORK_TAB='wo';route();}
+
+function renderWOBody(){
+  let rows=DB.all('wos').filter(w=>matches(w,['id','description','assetId','assignedTo','requestedBy','status']));
+  const all=rows.slice();
+  const meName=DB.getWho();
+  if(WO_FILTER==='open')rows=rows.filter(DB.isOpen);
+  else if(WO_FILTER==='progress')rows=rows.filter(w=>w.status==='In Progress');
+  else if(WO_FILTER==='done')rows=rows.filter(DB.isDone);
+  else if(WO_FILTER==='mine')rows=rows.filter(w=>DB.isActive(w)&&(w.assignedTo||'')===meName);
+  else if(WO_FILTER==='unassigned')rows=rows.filter(w=>DB.isActive(w)&&!w.assignedTo);
+  rows.sort((a,b)=>(DB.woDate(b)||'').localeCompare(DB.woDate(a)||''));
+  const openN=all.filter(DB.isOpen).length;
+  const progN=all.filter(w=>w.status==='In Progress').length;
+  const mineN=all.filter(w=>DB.isActive(w)&&(w.assignedTo||'')===meName).length;
+  const unassignedN=all.filter(w=>DB.isActive(w)&&!w.assignedTo).length;
+  const hours=all.filter(DB.isDone).reduce((s,w)=>s+(DB.num(w.hours)||0),0);
+  const title={all:'All work orders',mine:'Assigned to you',open:'Pending',
+    progress:'In progress',done:'Completed',unassigned:'Nobody assigned'}[WO_FILTER];
+  return `
+  <div class="grid g4" style="margin-bottom:20px">
+    <div class="stat click" onclick="setWOFilter('mine')"><div class="n">${mineN}</div><div class="l">Assigned to you</div></div>
+    <div class="stat click" onclick="setWOFilter('open')"><div class="n">${openN}</div><div class="l">Pending</div></div>
+    <div class="stat click" onclick="setWOFilter('progress')"><div class="n">${progN}</div><div class="l">In progress</div></div>
+    <div class="stat click" onclick="setWOFilter('unassigned')"><div class="n" style="color:${unassignedN?'var(--bad)':'inherit'}">${unassignedN}</div><div class="l">Nobody assigned</div></div>
+  </div>
+  <div class="chipset">
+    <div class="vtog">
+      <button class="${WO_VIEW==='list'?'on':''}" onclick="setWOView('list')">&#9776; List</button>
+      <button class="${WO_VIEW==='calendar'?'on':''}" onclick="setWOView('calendar')">&#128197; Calendar</button>
+    </div>
+    ${WO_VIEW==='list'?`
+      <button class="fchip ${WO_FILTER==='all'?'on':''}" onclick="setWOFilter('all')">All</button>
+      <button class="fchip ${WO_FILTER==='mine'?'on':''}" onclick="setWOFilter('mine')">Mine</button>
+      <button class="fchip ${WO_FILTER==='open'?'on':''}" onclick="setWOFilter('open')">Pending</button>
+      <button class="fchip ${WO_FILTER==='unassigned'?'on':''}" onclick="setWOFilter('unassigned')">Unassigned</button>
+      <button class="fchip ${WO_FILTER==='done'?'on':''}" onclick="setWOFilter('done')">Completed</button>`:''}
+    <button class="btn out" onclick="exportCSV('wos')">Export CSV</button>
+    <span style="color:var(--muted);font-size:12.5px;margin-left:auto">${all.length} on record · ${hours.toFixed(1)}h logged</span>
+  </div>
+  ${WO_VIEW==='calendar'?renderWOCalendar():`
+  <div class="card" style="padding:6px 20px 20px">
+    <h3 class="sec" style="margin-top:16px">${esc(title)}</h3>
+    ${renderTable([
+      {label:'WO',render:r=>`<b class="mono">${esc(r.id)}</b>`},
+      {label:'Description',render:r=>`<b>${esc(r.description||'—')}</b> ${docChip(r.docUrl,'Reference document')}<br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}${r.pmId?' · from '+esc(r.pmId):''}${r.stopId?' · from '+esc(r.stopId):''}</small>`},
+      {label:'Type',hideSm:true,render:r=>`<span class="chip c-open">${esc(r.type||'—')}</span>`},
+      {label:'Priority',render:r=>prioChip(r.priority)},
+      {label:'Assigned to',render:r=>r.assignedTo
+        ?(r.assignedTo===meName?`<b>${esc(r.assignedTo)}</b>`:esc(r.assignedTo))
+        :'<span class="chip c-crit">Nobody</span>'},
+      {label:'Scheduled',hideSm:true,render:r=>fmtDate(r.dateDue||r.dateRequested)},
+      {label:'Status',render:r=>statusChip(r.status)}
+    ],rows,{empty:'No work orders in this view.',onRow:'editWO'})}
+  </div>`}`;}
+
+/* ---------- PM plan ---------- */
+function setPMFilter(f){PM_FILTER=f;WORK_TAB='pm';route();}
+
+function renderPMBody(){
+  let rows=DB.all('pms').filter(p=>matches(p,['id','description','assetId','frequency','tech']));
+  const all=rows.slice();
+  const meName=DB.getWho();
+  const never=new Set(Compliance.neverDone().map(p=>p.id));
+  if(PM_FILTER==='mine')rows=rows.filter(r=>(r.tech||'')===meName);
+  else if(PM_FILTER==='unassigned')rows=rows.filter(r=>!r.tech);
+  else if(PM_FILTER==='overdue')rows=rows.filter(r=>(DB.daysUntil(r.nextDue)??99)<0);
+  else if(PM_FILTER==='never')rows=rows.filter(r=>never.has(r.id));
+  rows.sort((a,b)=>(a.nextDue||'9999').localeCompare(b.nextDue||'9999'));
+  const overdue=all.filter(r=>(DB.daysUntil(r.nextDue)??99)<0).length;
+  const unassigned=all.filter(r=>!r.tech).length;
+  const mine=all.filter(r=>(r.tech||'')===meName).length;
+  const comp=Compliance.summary({days:90});
+  return `
+  <div class="grid g4" style="margin-bottom:20px">
+    <div class="stat click" onclick="setPMFilter('all')"><div class="n">${all.length}</div><div class="l">Scheduled PMs</div></div>
+    <div class="stat click" onclick="setPMFilter('overdue')"><div class="n" style="color:${overdue?'var(--bad)':'inherit'}">${overdue}</div><div class="l">Overdue</div></div>
+    <div class="stat click" onclick="setPMFilter('mine')"><div class="n">${mine}</div><div class="l">Assigned to you</div></div>
+    <div class="stat click" onclick="setPMFilter('never')"><div class="n" style="color:${never.size?'var(--bad)':'var(--ok)'}">${never.size}</div><div class="l">Never completed</div></div>
+  </div>
+  <div class="chipset">
+    <a class="btn tonal" href="#/compliance">&#9989; Compliance record</a>
+    <button class="fchip ${PM_FILTER==='all'?'on':''}" onclick="setPMFilter('all')">All</button>
+    <button class="fchip ${PM_FILTER==='mine'?'on':''}" onclick="setPMFilter('mine')">Mine</button>
+    <button class="fchip ${PM_FILTER==='overdue'?'on':''}" onclick="setPMFilter('overdue')">Overdue</button>
+    <button class="fchip ${PM_FILTER==='never'?'on':''}" onclick="setPMFilter('never')">Never done</button>
+    <button class="fchip ${PM_FILTER==='unassigned'?'on':''}" onclick="setPMFilter('unassigned')">Unassigned</button>
+    <button class="btn out" onclick="exportCSV('pms')">Export CSV</button>
+    <span style="color:var(--muted);font-size:12.5px;margin-left:auto">
+      <a href="#/compliance">${comp.pct===null?'no':comp.pct+'%'} on-time over 90 days</a></span>
+  </div>
+  ${never.size&&PM_FILTER==='all'?`<div class="note bad">
+    <b>${never.size} PM${never.size===1?' has':'s have'} never been marked complete.</b>
+    If the work is happening but not being logged, it cannot be proven.
+    <a href="#" onclick="setPMFilter('never');return false;">Show them</a>.</div>`:''}
+  <div class="card" style="padding:6px 20px 20px">
+    <h3 class="sec" style="margin-top:16px">${PM_FILTER==='all'?'Schedule':PM_FILTER==='mine'?'Your PMs':PM_FILTER==='overdue'?'Overdue':PM_FILTER==='never'?'Never completed':'Nobody responsible'}</h3>
+    ${renderTable([
+      {label:'PM',render:r=>`<b class="mono">${esc(r.id)}</b>`},
+      {label:'Task',render:r=>`<b>${esc(r.description||'—')}</b> ${docChip(r.procedureUrl,'Procedure attached')}<br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>`},
+      {label:'Frequency',hideSm:true,render:r=>`<span class="chip c-open">${esc(r.frequency||'—')}</span>`},
+      {label:'Next due',render:r=>dueChip(r.nextDue)},
+      {label:'History',render:r=>{
+        const logs=Compliance.logsFor(r.id);
+        if(!logs.length)return '<span class="chip c-crit">never</span>';
+        const late=logs.filter(l=>!Compliance.onTime(l)).length;
+        const pct=Math.round(((logs.length-late)/logs.length)*100);
+        return `<b>${logs.length}×</b> <span style="color:${pct>=90?'var(--ok)':pct>=70?'var(--warn)':'var(--bad)'};font-size:12px">${pct}%</span>`;}},
+      {label:'Responsible',hideSm:true,render:r=>r.tech
+        ?(r.tech===meName?`<b>${esc(r.tech)}</b>`:esc(r.tech))
+        :'<span class="chip c-crit">Nobody</span>'},
+      {label:'',render:r=>`<button class="btn ok sm" onclick="event.stopPropagation();completePM('${jsq(r.id)}')">Mark done</button>
+        <button class="btn out sm" onclick="event.stopPropagation();genWO('${jsq(r.id)}')">Generate WO</button>`}
+    ],rows,{empty:'Nothing in this view.',onRow:'showPMHistory'})}
+    <div class="note">Click any row to see its full completion history.</div>
+  </div>`;}
+
 /* ============================================================
    DOWNTIME AND DEFECTS
    ------------------------------------------------------------
    Reporting has to be fast — the machine is down while the
-   technician is typing. Target is under 15 seconds: machine,
-   when it started, why, save.
-
-   Closing is the part that usually rots. If nobody closes a
-   record it stays open forever and every total becomes a lie,
-   so open stoppages get a permanent banner and a one-tap
-   "Running again".
+   technician is typing. Closing is the part that usually rots, so
+   open stoppages get a permanent banner and a one-tap close.
    ============================================================ */
-
-/* Quick "when did it start" buttons. Typing a time on a phone while
-   standing at a stopped machine is the slowest part of the form. */
 const STOP_QUICK = [
   { mins: 0,   label: 'Just now' },
   { mins: 15,  label: '15 min ago' },
@@ -263,8 +444,6 @@ function stopQuickTime(mins){
   if(btn)btn.classList.add('on');
   refreshStopLessons();}
 
-/* Live hint of what others did about this before — shown while the
-   form is still open, because that is when it is useful. */
 function refreshStopLessons(){
   const box=document.getElementById('stopLessons');
   if(!box)return;
@@ -282,7 +461,6 @@ function reportStop(kind,presetAsset){
     body:`
       ${F.select('assetId','Equipment',presetAsset||'',assetOptions(),
         {required:true,onchange:'refreshStopLessons()'})}
-
       <label class="req">When did it start?</label>
       <div class="quicktime">
         ${STOP_QUICK.map(q=>`<button type="button" id="qt${q.mins}"
@@ -290,23 +468,17 @@ function reportStop(kind,presetAsset){
       </div>
       ${F.datetime('startedAt','',Stops.nowLocal(),
         {hint:'Adjust if it actually started at another time.'})}
-
       ${F.select('reason',k.label==='Defect'?'What kind of defect?':'Why did it stop?','',
         [{v:'',t:'— choose —'}].concat(k.reasons.map(r=>({v:r,t:r}))),
         {required:true,onchange:'refreshStopLessons()'})}
-
       ${kind==='defect'?F.num('qty','How many parts affected','',{step:'1',placeholder:'e.g. 12'}):''}
-
       ${F.area('detail','What happened',"",2,
         {placeholder:kind==='defect'
           ? 'e.g. Weld pull tests failing on station 2, parts going to scrap.'
           : 'e.g. Machine faulted and will not reset, drive shows an alarm.',
          oninput:'refreshStopLessons()'})}
-
       <div id="stopLessons"></div>
-
       ${F.person('by','Reported by',DB.getWho(),{emptyLabel:'— not recorded —'})}
-
       <div class="note">Save this now and get back to the machine. Close it
       with <b>Running again</b> when production restarts — that is when you
       record what fixed it.</div>`,
@@ -319,32 +491,27 @@ function saveStop(kind){
   if(!d.assetId){toast('Pick which equipment stopped');return;}
   if(!d.reason){toast('Choose a reason — it is what makes the data worth collecting');return;}
   if(!d.startedAt){toast('Enter when it started');return;}
-
   /* A start time in the future is a typo, and it would produce a
      negative duration that quietly corrupts every total. */
   if(d.startedAt>Stops.nowLocal()){
     toast('That start time is in the future — check it');return;}
-
   const rec={
     id:DB.nextId('stops','EV-',5),
     kind:kind==='defect'?'defect':'downtime',
     assetId:d.assetId, reason:d.reason,
     startedAt:d.startedAt, endedAt:'',
     qty:d.qty||'', detail:d.detail||'',
-    by:d.by||DB.getWho(), fixedBy:'', woId:''
-  };
+    by:d.by||DB.getWho(), fixedBy:'', woId:''};
   DB.upsert('stops',rec);
   Modal.close();route();
   toast(rec.id+' logged — close it when the machine runs again');}
 
-/* ---------- closing ---------- */
 function closeStop(id){
   const s=DB.get('stops',id);
   if(!s){toast('That record no longer exists');route();return;}
   if(!Stops.isOpen(s)){toast('That one is already closed');return;}
   const k=Stops.KINDS[s.kind]||Stops.KINDS.downtime;
   const running=Stops.minutes(s);
-
   Modal.open({
     title:'Running again — '+s.id,
     body:`
@@ -354,16 +521,12 @@ function closeStop(id){
           <b>down ${Stops.fmtMins(running)}</b> so far</div>
       </div>
       ${s.detail?`<div class="note">${esc(s.detail)}</div>`:''}
-
       ${F.datetime('endedAt','When did it start running again?',Stops.nowLocal(),{required:true})}
-
       ${F.area('fixedBy','What got it running?','',3,
         {required:true,
          placeholder:'e.g. Reset the drive and reseated the encoder plug. Ran fine after.',
          hint:'This single line is the whole point. Next time this happens, this is what the person standing at the machine will read.'})}
-
       ${F.person('closedBy','Closed by',DB.getWho(),{emptyLabel:'— not recorded —'})}
-
       <div class="note">Raise a work order too if this needs a proper repair
       rather than a reset.</div>`,
     footer:`<button class="btn ok" onclick="doCloseStop('${jsq(id)}')">&#10003; Running again</button>
@@ -375,10 +538,8 @@ function doCloseStop(id){
   if(!s){toast('That record no longer exists');return;}
   const d=F.read();
   const ended=d.endedAt||Stops.nowLocal();
-
   if(ended<s.startedAt){
     toast('That end time is before it started — check it');return;}
-
   /* A stoppage closed with no explanation is just a number. Nudge
      firmly, but let a determined person through — a hard block gets
      defeated with a full stop and then the data is worse AND the
@@ -388,14 +549,12 @@ function doCloseStop(id){
       const el=document.getElementById('f_fixedBy');
       if(el)el.focus();
       return;}}
-
   DB.upsert('stops',{id:s.id,endedAt:ended,
     fixedBy:d.fixedBy||'',closedBy:d.closedBy||DB.getWho()});
   Modal.close();route();
   const mins=Stops.minutes(Object.assign({},s,{endedAt:ended}));
   toast(s.id+' closed — '+Stops.fmtMins(mins)+' lost');}
 
-/* Raise a work order pre-filled from a stoppage, and link the two. */
 function editWOFromStop(stopId){
   const s=DB.get('stops',stopId);
   if(!s)return;
@@ -405,8 +564,7 @@ function editWOFromStop(stopId){
     type:s.kind==='defect'?'Troubleshoot':'Repair',
     priority:'High', requestedBy:s.by||DB.getWho(),
     dateRequested:today(), status:'Open', cause:'To be determined',
-    stopId:s.id
-  };
+    stopId:s.id};
   DB.upsert('wos',wo);
   DB.upsert('stops',{id:s.id,woId:wo.id});
   route();
@@ -417,7 +575,6 @@ function deleteStop(id){
   confirmDelete('Delete '+id+'?\n\nThis removes it from every downtime total.',()=>{
     DB.remove('stops',id);Modal.close();route();toast('Record deleted');});}
 
-/* ---------- one stoppage, as a card ---------- */
 function stopCard(h){
   const s=h.stop||h;
   const k=Stops.KINDS[s.kind]||Stops.KINDS.downtime;
@@ -447,7 +604,6 @@ function viewStop(id){
   const open=Stops.isOpen(s);
   const lessons=Insights.similarStops({assetId:s.assetId,reason:s.reason,
     description:s.detail||'',excludeId:s.id,limit:3});
-
   Modal.open({
     title:k.label+' — '+s.id,
     body:`
@@ -483,10 +639,8 @@ function viewStop(id){
       <button class="btn out" onclick="Modal.close()">Close</button>
       ${DB.can('delete')?`<button class="btn bad" style="margin-left:auto" onclick="deleteStop('${jsq(id)}')">Delete</button>`:''}`});}
 
-/* ---------- the banner ----------
-   Deliberately loud and always visible. An open stoppage nobody
-   closes is the single failure mode that makes this whole feature
-   worthless. */
+/* Deliberately loud and always visible. An open stoppage nobody
+   closes is the single failure mode that makes this worthless. */
 function openStopsBanner(){
   const open=Stops.open();
   if(!open.length)return '';
@@ -509,7 +663,7 @@ function openStopsBanner(){
   </div>`;}
 
 /* ============================================================
-   DOWNTIME SCREEN — where the numbers live
+   PROBLEMS — the downtime screen
    ============================================================ */
 function setStopDays(d){STOP_DAYS=d;route();}
 function setStopKind(k){STOP_KIND=k;route();}
@@ -521,15 +675,14 @@ function renderStops(){
   const worst=Stops.byAsset({days:STOP_DAYS,kind:STOP_KIND});
   const repeats=Stops.repeats();
   const assets=DB.all('assets');
-
   return `
-  <h1 class="page">Downtime &amp; Defects</h1>
-  <p class="sub">How much production was lost, and why.</p>
+  <h1 class="page">Problems</h1>
+  <p class="sub">Downtime and defects — how much production was lost, and why.</p>
 
   ${openStopsBanner()}
+  ${bigActions()}
 
   <div class="chipset">
-    <button class="btn bad" onclick="openStopChooser()">&#9888; Log downtime or defect</button>
     <button class="fchip ${STOP_DAYS===7?'on':''}" onclick="setStopDays(7)">7 days</button>
     <button class="fchip ${STOP_DAYS===30?'on':''}" onclick="setStopDays(30)">30 days</button>
     <button class="fchip ${STOP_DAYS===90?'on':''}" onclick="setStopDays(90)">90 days</button>
@@ -579,8 +732,7 @@ function renderStops(){
       </div>`).join('')}
     </div>
     <div class="note">The same reason on the same machine three times is a
-    root-cause problem, not bad luck. This is where a PM change or a design
-    fix pays for itself.</div>
+    root-cause problem, not bad luck.</div>
   </div>`:''}
 
   ${pareto.length?`<div class="card">
@@ -599,8 +751,7 @@ function renderStops(){
         </td></tr>`).join('')}</tbody>
     </table></div>
     <div class="note">Sorted by time lost, not by how often it happens.
-    Twelve two-minute jams matter less than one six-hour electrical fault,
-    and counting events would hide that.</div>
+    Twelve two-minute jams matter less than one six-hour electrical fault.</div>
   </div>`:''}
 
   ${worst.length?`<div class="card">
@@ -690,8 +841,7 @@ function renderSmart(){
   const stopRepeats=Stops.repeats();
   return `
   <h1 class="page">Smart Assist</h1>
-  <p class="sub">What this plant has already fixed — from work orders and downtime records. Every result is real and you can open it.</p>
-
+  <p class="sub">What this plant has already fixed — from work orders and downtime records.</p>
   <div class="card smartcard">
     <h3 class="sec">Seen this before?</h3>
     <div class="f2">
@@ -707,7 +857,6 @@ function renderSmart(){
     <div id="smartResults" style="margin-top:18px">
       <div class="empty">Describe the problem, or pick a machine, to search what has been fixed before.</div></div>
   </div>
-
   ${(repeats.length||stopRepeats.length)?`<div class="card">
     <h3 class="sec">Recurring problems</h3>
     <div class="repeats">
@@ -730,7 +879,6 @@ function renderSmart(){
       </div>`).join('')}
     </div>
   </div>`:''}
-
   <div class="card">
     <h3 class="sec">How much this can find</h3>
     <div class="bar"><i style="width:${q.pct}%;background:${q.pct>=70?'var(--ok)':q.pct>=40?'var(--warn)':'var(--bad)'}"></i></div>
@@ -741,9 +889,8 @@ function renderSmart(){
     ${q.total===0?`<div class="note">Nothing closed yet.</div>`
       :q.pct<60?`<div class="note bad"><b>Most records do not say what was done.</b>
         One honest line at close is what turns this from a counter into something worth reading.</div>`
-      :`<div class="note">Good documentation rate — that is what makes the results above useful.</div>`}
+      :`<div class="note">Good documentation rate.</div>`}
   </div>
-
   <div class="card">
     <h3 class="sec">What this is, and is not</h3>
     <div class="tablewrap"><table><tbody>
@@ -778,7 +925,7 @@ function smartForAsset(id){
     runSmartSearch();},60);}
 
 /* ============================================================
-   HOME
+   HOME — the two buttons the sidebar mirrors
    ============================================================ */
 function renderHome(){
   const assets=DB.all('assets'),wos=DB.all('wos'),pms=DB.all('pms');
@@ -808,25 +955,11 @@ function renderHome(){
   <p class="sub">${esc(DB.raw().meta.site||'Maintenance')} · signed in as <b>${esc(meName)}</b> (${esc(ROLE_LABEL[DB.role()]||DB.role())})</p>
 
   ${openStopsBanner()}
-
-  <div class="bigactions">
-    <button class="bigaction" onclick="openWorkChooser()">
-      <div class="ba-ic">&#128736;</div>
-      <div class="ba-txt"><b>Raise work</b><span>Work order or PM</span></div>
-    </button>
-    <button class="bigaction bad" onclick="openStopChooser()">
-      <div class="ba-ic">&#9888;</div>
-      <div class="ba-txt"><b>Report a problem</b><span>Downtime or defect</span></div>
-    </button>
-    <a class="bigaction ghost" href="#/smart">
-      <div class="ba-ic">&#128161;</div>
-      <div class="ba-txt"><b>Has this happened before?</b><span>Search past fixes</span></div>
-    </a>
-  </div>
+  ${bigActions()}
 
   <div class="grid g4" style="margin-bottom:20px">
     <div class="stat click" onclick="location.hash='#/assets'"><div class="n">${assets.length}</div><div class="l">Equipment in plant</div></div>
-    <div class="stat click" onclick="WO_FILTER='open';location.hash='#/wo'">
+    <div class="stat click" onclick="WO_FILTER='open';WORK_TAB='wo';location.hash='#/wo'">
       <div class="n" style="color:${openWos.length?'var(--pri)':'inherit'}">${openWos.length}</div>
       <div class="l">Pending work orders</div><div class="d">${progWos.length} in progress</div></div>
     <div class="stat click" onclick="location.hash='#/stops'">
@@ -856,9 +989,6 @@ function renderHome(){
   ${recent.length?`<div class="card"><h3 class="sec">Recently viewed equipment</h3>
     ${recent.map(a=>`<a class="pill" href="#/asset/${encodeURIComponent(a.id)}"><b>${esc(a.id)}</b> <small>${esc(a.name)}</small></a>`).join('')}</div>`:''}`;}
 
-/* ============================================================
-   DASHBOARD
-   ============================================================ */
 function renderDashboard(){
   const assets=DB.all('assets'),pms=DB.all('pms'),parts=DB.all('parts'),wos=DB.all('wos');
   const openWos=wos.filter(DB.isActive);
@@ -876,9 +1006,7 @@ function renderDashboard(){
   return `
   <h1 class="page">Dashboard</h1>
   <p class="sub">${esc(DB.raw().meta.site||'Maintenance overview')}</p>
-
   ${openStopsBanner()}
-
   <div class="grid g4" style="margin-bottom:20px">
     ${stat('&#128451;','var(--info-c)','var(--pri)',assets.length,'Equipment registered')}
     ${stat('&#129534;','var(--bad-c)','var(--bad)',openWos.length,'Open work orders',
@@ -890,11 +1018,10 @@ function renderDashboard(){
       comp.pct===null?'var(--muted)':comp.pct>=90?'var(--ok)':'var(--warn)',
       comp.pct===null?'—':comp.pct+'%','PM compliance (90d)',comp.overdueNow+' overdue now')}
   </div>
-
   ${pareto.length?`<div class="card">
     <h3 class="sec">Biggest causes of lost production — 30 days</h3>
     <div class="tablewrap"><table>
-      <thead><tr><th>Reason</th><th>Equipment type</th><th style="text-align:right">Times</th>
+      <thead><tr><th>Reason</th><th>Type</th><th style="text-align:right">Times</th>
         <th style="text-align:right">Lost</th><th>Share</th></tr></thead>
       <tbody>${pareto.slice(0,6).map(r=>`<tr>
         <td><b>${esc(r.reason)}</b></td>
@@ -903,13 +1030,11 @@ function renderDashboard(){
         <td class="num"><b>${Stops.fmtMins(r.mins)}</b></td>
         <td style="min-width:120px"><div class="bar" style="margin:0"><i style="width:${r.pct}%;background:var(--bad)"></i></div></td>
       </tr>`).join('')}</tbody></table></div>
-    <div class="actions"><a class="btn out sm" href="#/stops">Open downtime</a></div>
+    <div class="actions"><a class="btn out sm" href="#/stops">Open Problems</a></div>
   </div>`:''}
-
   ${comp.overdueNow?`<div class="note bad">
     <b>${comp.overdueNow} PM${comp.overdueNow===1?' is':'s are'} overdue right now.</b>
     <a href="#/compliance">See which</a>.</div>`:''}
-
   ${repeats.length?`<div class="card">
     <h3 class="sec">Recurring failures</h3>
     ${renderTable([
@@ -921,11 +1046,9 @@ function renderDashboard(){
     ],repeats,{onRow:'openAsset'})}
     <div class="actions"><a class="btn out sm" href="#/smart">Open Smart Assist</a></div>
   </div>`:''}
-
   ${unassigned.length?`<div class="note bad">
     <b>${unassigned.length} open work order${unassigned.length===1?'':'s'} with nobody assigned.</b>
-    <a href="#" onclick="WO_FILTER='unassigned';location.hash='#/wo';return false;">Show them</a>.</div>`:''}
-
+    <a href="#" onclick="WO_FILTER='unassigned';WORK_TAB='wo';location.hash='#/wo';return false;">Show them</a>.</div>`:''}
   <div class="grid g2">
     <div class="card"><h3 class="sec">PMs due next</h3>
       ${renderTable([
@@ -944,7 +1067,6 @@ function renderDashboard(){
       ],openWos.slice(0,6),{empty:'No open work orders.',onRow:'editWO'})}
       <div class="actions"><a class="btn out sm" href="#/wo">Open work orders</a></div></div>
   </div>
-
   ${lowParts.length?`<div class="card"><h3 class="sec">Low stock — reorder</h3>
     ${renderTable([
       {label:'Part',key:'id'},{label:'Description',key:'description'},
@@ -1029,7 +1151,6 @@ function renderAssetDetail(id){
   const stopRepeats=Stops.repeats().filter(r=>r.assetId===id);
   const myStops=Stops.forAsset(id).slice(0,8);
   const isDown=Stops.open().some(s=>s.assetId===id);
-
   return `
   <div class="crumb"><a href="#/home">Home</a> › <a href="#/assets">Equipment</a> › ${esc(a.id)}</div>
   <div class="ahead"><div class="big">&#9881;</div>
@@ -1054,6 +1175,8 @@ function renderAssetDetail(id){
     ${stopRepeats.map(r=>`<b>${esc(r.reason)}</b> ${r.count} times (${Stops.fmtMins(r.mins)} lost)`).join('; ')}.
     </div>`:''}
 
+  ${bigActions(a.id)}
+
   ${hasDocs?`<div class="card doccard"><h3 class="sec">Documentation</h3>
     <div class="actions" style="margin-top:0">
       ${docLink(a.manualUrl,'Machine manual',{cls:'btn filled',icon:'&#128214;'})}
@@ -1061,8 +1184,6 @@ function renderAssetDetail(id){
     </div></div>`:''}
 
   <div class="chipset">
-    <button class="btn filled" onclick="openWorkChooser('${jsq(a.id)}')">&#128736; Raise work</button>
-    <button class="btn bad" onclick="openStopChooser('${jsq(a.id)}')">&#9888; Report a problem</button>
     <button class="btn out" onclick="newPartFor('${jsq(a.id)}')">&#43; Add part</button>
     <button class="btn out" onclick="editAsset('${jsq(a.id)}')">Edit</button>
     <button class="btn out" onclick="smartForAsset('${jsq(a.id)}')">&#128161; Past fixes</button>
@@ -1244,7 +1365,7 @@ function editAsset(id){
       </div>
       ${F.person('owner','Responsible person',a.owner,{emptyLabel:'— nobody assigned —'})}
       ${F.num('hourlyCost','Downtime cost per hour',a.hourlyCost,{step:'1',placeholder:'e.g. 500',
-        hint:'Optional. Set this and every downtime record on this machine gets a dollar figure — which is the number that gets attention upstairs. Leave blank rather than guessing.'})}
+        hint:'Optional. Set this and every downtime record on this machine gets a dollar figure — the number that gets attention upstairs. Leave blank rather than guessing.'})}
       <h3 class="sec" style="margin-top:24px">Documentation</h3>
       ${F.text('manualUrl','Machine manual link',a.manualUrl,{placeholder:'https://iacgroup.sharepoint.com/...',hint:LINK_HINT})}
       ${F.text('drawingUrl','Drawings / schematics link',a.drawingUrl,{placeholder:'https://iacgroup.sharepoint.com/...'})}
@@ -1272,70 +1393,8 @@ function delAsset(id){
     DB.remove('assets',id);Modal.close();location.hash='#/assets';toast('Equipment deleted');});}
 
 /* ============================================================
-   PM PLAN
+   PM forms, completion and compliance
    ============================================================ */
-function setPMFilter(f){PM_FILTER=f;route();}
-
-function renderPM(){
-  let rows=DB.all('pms').filter(p=>matches(p,['id','description','assetId','frequency','tech']));
-  const all=rows.slice();
-  const meName=DB.getWho();
-  const never=new Set(Compliance.neverDone().map(p=>p.id));
-  if(PM_FILTER==='mine')rows=rows.filter(r=>(r.tech||'')===meName);
-  else if(PM_FILTER==='unassigned')rows=rows.filter(r=>!r.tech);
-  else if(PM_FILTER==='overdue')rows=rows.filter(r=>(DB.daysUntil(r.nextDue)??99)<0);
-  else if(PM_FILTER==='never')rows=rows.filter(r=>never.has(r.id));
-  rows.sort((a,b)=>(a.nextDue||'9999').localeCompare(b.nextDue||'9999'));
-  const overdue=all.filter(r=>(DB.daysUntil(r.nextDue)??99)<0).length;
-  const unassigned=all.filter(r=>!r.tech).length;
-  const mine=all.filter(r=>(r.tech||'')===meName).length;
-  const comp=Compliance.summary({days:90});
-  return `
-  <h1 class="page">PM Plan</h1>
-  <p class="sub">${all.length} preventive maintenance schedule${all.length===1?'':'s'} ·
-    <a href="#/compliance">${comp.pct===null?'no':comp.pct+'%'} on-time over 90 days</a></p>
-  <div class="grid g4" style="margin-bottom:20px">
-    <div class="stat click" onclick="setPMFilter('all')"><div class="n">${all.length}</div><div class="l">Scheduled PMs</div></div>
-    <div class="stat click" onclick="setPMFilter('overdue')"><div class="n" style="color:${overdue?'var(--bad)':'inherit'}">${overdue}</div><div class="l">Overdue</div></div>
-    <div class="stat click" onclick="setPMFilter('mine')"><div class="n">${mine}</div><div class="l">Assigned to you</div></div>
-    <div class="stat click" onclick="setPMFilter('never')"><div class="n" style="color:${never.size?'var(--bad)':'var(--ok)'}">${never.size}</div><div class="l">Never completed</div></div>
-  </div>
-  <div class="chipset">
-    <button class="btn filled" onclick="editPM()">&#43; New PM</button>
-    <a class="btn tonal" href="#/compliance">&#9989; Compliance record</a>
-    <button class="fchip ${PM_FILTER==='all'?'on':''}" onclick="setPMFilter('all')">All</button>
-    <button class="fchip ${PM_FILTER==='mine'?'on':''}" onclick="setPMFilter('mine')">Mine</button>
-    <button class="fchip ${PM_FILTER==='overdue'?'on':''}" onclick="setPMFilter('overdue')">Overdue</button>
-    <button class="fchip ${PM_FILTER==='never'?'on':''}" onclick="setPMFilter('never')">Never done</button>
-    <button class="fchip ${PM_FILTER==='unassigned'?'on':''}" onclick="setPMFilter('unassigned')">Unassigned</button>
-    <button class="btn out" onclick="exportCSV('pms')">Export CSV</button>
-  </div>
-  ${never.size&&PM_FILTER==='all'?`<div class="note bad">
-    <b>${never.size} PM${never.size===1?' has':'s have'} never been marked complete.</b>
-    If the work is happening but not being logged, it cannot be proven.
-    <a href="#" onclick="setPMFilter('never');return false;">Show them</a>.</div>`:''}
-  <div class="card" style="padding:6px 20px 20px">
-    <h3 class="sec" style="margin-top:16px">${PM_FILTER==='all'?'Schedule':PM_FILTER==='mine'?'Your PMs':PM_FILTER==='overdue'?'Overdue':PM_FILTER==='never'?'Never completed':'Nobody responsible'}</h3>
-    ${renderTable([
-      {label:'PM',render:r=>`<b class="mono">${esc(r.id)}</b>`},
-      {label:'Task',render:r=>`<b>${esc(r.description||'—')}</b> ${docChip(r.procedureUrl,'Procedure attached')}<br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>`},
-      {label:'Frequency',hideSm:true,render:r=>`<span class="chip c-open">${esc(r.frequency||'—')}</span>`},
-      {label:'Next due',render:r=>dueChip(r.nextDue)},
-      {label:'History',render:r=>{
-        const logs=Compliance.logsFor(r.id);
-        if(!logs.length)return '<span class="chip c-crit">never</span>';
-        const late=logs.filter(l=>!Compliance.onTime(l)).length;
-        const pct=Math.round(((logs.length-late)/logs.length)*100);
-        return `<b>${logs.length}×</b> <span style="color:${pct>=90?'var(--ok)':pct>=70?'var(--warn)':'var(--bad)'};font-size:12px">${pct}%</span>`;}},
-      {label:'Responsible',hideSm:true,render:r=>r.tech
-        ?(r.tech===meName?`<b>${esc(r.tech)}</b>`:esc(r.tech))
-        :'<span class="chip c-crit">Nobody</span>'},
-      {label:'',render:r=>`<button class="btn ok sm" onclick="event.stopPropagation();completePM('${jsq(r.id)}')">Mark done</button>
-        <button class="btn out sm" onclick="event.stopPropagation();genWO('${jsq(r.id)}')">Generate WO</button>`}
-    ],rows,{empty:'Nothing in this view.',onRow:'showPMHistory'})}
-    <div class="note">Click any row to see its full completion history.</div>
-  </div>`;}
-
 function editPM(id,presetAsset){
   if(id&&!DB.get('pms',id)){toast('That PM no longer exists');route();return;}
   const p=id?DB.get('pms',id):{};
@@ -1368,7 +1427,8 @@ function savePM(isNew){
   if(!d.id){toast('PM number is required');return;}
   if(isNew&&DB.get('pms',d.id)){toast('That PM number already exists');return;}
   if(d.procedureUrl&&!safeUrl(d.procedureUrl)){toast('The procedure link is not a valid web address');return;}
-  DB.upsert('pms',d);Modal.close();route();toast('PM '+d.id+' saved');}
+  DB.upsert('pms',d);Modal.close();
+  WORK_TAB='pm';route();toast('PM '+d.id+' saved');}
 
 function delPM(id){
   const logs=Compliance.logsFor(id).length;
@@ -1384,10 +1444,14 @@ function genWO(pmId){
     assignedTo:p.tech||'',docUrl:p.procedureUrl||'',
     requestedBy:DB.getWho(),dateRequested:today(),dateDue:p.nextDue||today(),
     status:'Open',pmId:p.id,cause:'To be determined'};
-  DB.upsert('wos',wo);route();
+  DB.upsert('wos',wo);
+  WORK_TAB='wo';route();
   toast(wo.id+' created from '+p.id+(wo.assignedTo?' for '+wo.assignedTo:''));}
 
-/* ---------- PM completion ---------- */
+/* Marking a PM done writes an immutable record, THEN rolls the
+   schedule forward. Order matters: if the write fails we must not
+   advance the schedule, or the work looks done with nothing to
+   prove it. */
 function completePM(id){
   const p=DB.get('pms',id);
   if(!p){toast('That PM no longer exists');route();return;}
@@ -1421,7 +1485,6 @@ function doCompletePM(id,opts={}){
   const doneDate=d.doneDate||today();
   const by=(d.by||'').trim()||DB.getWho();
   if(!by){toast('Record who completed it');return;}
-  /* Write the evidence first. Only advance the schedule once it exists. */
   const log=Compliance.buildLog(p,{
     id:DB.nextId('pmlogs','PMC-',5),
     doneDate,by,hours:d.hours||'',notes:d.notes||'',woId:opts.woId||''});
@@ -1467,7 +1530,6 @@ function showPMHistory(id){
       <button class="btn out" onclick="Modal.close();editPM('${jsq(id)}')">Edit PM</button>
       <button class="btn out" onclick="Modal.close()">Close</button>`});}
 
-/* ---------- compliance screen ---------- */
 function setCompDays(d){COMP_DAYS=d;route();}
 function setCompAsset(a){COMP_ASSET=a;route();}
 
@@ -1551,143 +1613,8 @@ function exportCompliance(){
   toast(rows.length+' completion records exported');}
 
 /* ============================================================
-   SPARE PARTS
+   WORK ORDER form + calendar
    ============================================================ */
-function renderParts(){
-  const rows=DB.all('parts').filter(p=>matches(p,['id','description','mfrPn','vendor','location','assetId']));
-  const value=rows.reduce((s,p)=>{
-    const q=DB.num(p.qty),c=DB.num(p.cost);
-    return s+(q!==null&&c!==null?q*c:0);},0);
-  const low=rows.filter(p=>DB.partStatus(p).label==='Low stock').length;
-  return `
-  <h1 class="page">Spare Parts</h1>
-  <p class="sub">${rows.length} part${rows.length===1?'':'s'} in the crib</p>
-  <div class="grid g4" style="margin-bottom:20px">
-    <div class="stat"><div class="n">${rows.length}</div><div class="l">Parts tracked</div></div>
-    <div class="stat"><div class="n" style="color:${low?'var(--bad)':'inherit'}">${low}</div><div class="l">At or below minimum</div></div>
-    <div class="stat"><div class="n">${rows.filter(p=>DB.num(p.qty)===null).length}</div><div class="l">Not yet counted</div></div>
-    <div class="stat"><div class="n">${value?'$'+value.toLocaleString(undefined,{maximumFractionDigits:0}):'—'}</div><div class="l">Inventory value</div></div>
-  </div>
-  <div class="chipset">
-    <button class="btn filled" onclick="editPart()">&#43; New part</button>
-    <button class="btn out" onclick="exportCSV('parts')">Export CSV</button>
-  </div>
-  <div class="card" style="padding:6px 20px 20px">
-    <h3 class="sec" style="margin-top:16px">Parts list</h3>
-    ${renderTable([
-      {label:'Part number',render:r=>`<b class="mono">${esc(r.id)}</b>`},
-      {label:'Description',render:r=>`<b>${esc(r.description||'—')}</b> ${docChip(r.docUrl,'Spec sheet')}<br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>`},
-      {label:'Mfr P/N',hideSm:true,render:r=>`<span class="mono">${esc(r.mfrPn||'—')}</span>`},
-      {label:'Vendor',key:'vendor',hideSm:true},
-      {label:'Location',render:r=>`<span class="mono">${esc(r.location||'—')}</span>`},
-      {label:'On hand',num:true,render:r=>r.qty??'—'},
-      {label:'Min',num:true,hideSm:true,render:r=>r.min??'—'},
-      {label:'Status',render:r=>{const s=DB.partStatus(r);return `<span class="chip ${s.cls}">${s.label}</span>`;}},
-      {label:'',render:r=>`<button class="btn tonal sm" onclick="event.stopPropagation();countPart('${jsq(r.id)}')">Count</button>`}
-    ],rows,{empty:'No parts yet.',onRow:'editPart'})}
-  </div>`;}
-
-function editPart(id,presetAsset){
-  if(id&&!DB.get('parts',id)){toast('That part no longer exists');route();return;}
-  const p=id?DB.get('parts',id):{};
-  const isNew=!id;
-  Modal.open({title:isNew?'New part':'Part '+p.id,
-    body:`${safeUrl(p.imageUrl)?`<div class="prev"><img src="${esc(safeUrl(p.imageUrl))}" alt="" onerror="this.parentNode.style.display='none'"/></div>`:''}
-      ${F.text('id','Part number',p.id||DB.nextId('parts','P-',4),{required:true,readonly:!isNew})}
-      ${F.text('description','Description',p.description,{required:true})}
-      ${F.select('assetId','Used on equipment',p.assetId||presetAsset||'',assetOptions())}
-      <div class="f2">
-        <div>${F.text('mfrPn','Manufacturer part number',p.mfrPn)}</div>
-        <div>${F.text('vendor','Vendor',p.vendor)}</div>
-        <div>${F.text('location','Storage location',p.location,{placeholder:'e.g. SP1-E3-A5'})}</div>
-        <div>${F.num('cost','Unit cost',p.cost,{step:'0.01'})}</div>
-        <div>${F.num('qty','Quantity on hand',p.qty,{step:'1'})}</div>
-        <div>${F.num('min','Minimum quantity',p.min,{step:'1'})}</div>
-      </div>
-      ${F.text('imageUrl','Picture link',p.imageUrl,{placeholder:'https://…'})}
-      ${F.text('docUrl','Spec sheet / manual link',p.docUrl,{placeholder:'https://…',hint:LINK_HINT})}`,
-    footer:`<button class="btn filled" onclick="savePart(${isNew})">Save part</button>
-      <button class="btn out" onclick="Modal.close()">Cancel</button>
-      ${!isNew&&DB.can('delete')?`<button class="btn bad" style="margin-left:auto" onclick="delPart('${jsq(p.id)}')">Delete</button>`:''}`});}
-
-function savePart(isNew){
-  const d=F.read();
-  if(!d.id||!d.description){toast('Part number and description are required');return;}
-  if(isNew&&DB.get('parts',d.id)){toast('That part number already exists');return;}
-  if(d.docUrl&&!safeUrl(d.docUrl)){toast('The document link is not a valid web address');return;}
-  DB.upsert('parts',d);Modal.close();route();toast('Part '+d.id+' saved');}
-function delPart(id){
-  confirmDelete('Delete part '+id+'?',()=>{DB.remove('parts',id);Modal.close();route();toast('Part deleted');});}
-function countPart(id){
-  const p=DB.get('parts',id);
-  if(!p){toast('That part no longer exists');route();return;}
-  const v=prompt('Quantity on hand for '+id+' ('+(p.description||'')+'):',p.qty??'');
-  if(v===null)return;
-  DB.upsert('parts',{id,qty:v.trim(),countedBy:DB.getWho(),countedOn:today()});
-  route();toast(id+' counted — '+v+' on hand');}
-
-/* ============================================================
-   WORK ORDERS
-   ============================================================ */
-function setWOView(v){WO_VIEW=v;route();}
-function setWOFilter(f){WO_FILTER=f;route();}
-
-function renderWO(){
-  let rows=DB.all('wos').filter(w=>matches(w,['id','description','assetId','assignedTo','requestedBy','status']));
-  const all=rows.slice();
-  const meName=DB.getWho();
-  if(WO_FILTER==='open')rows=rows.filter(DB.isOpen);
-  else if(WO_FILTER==='progress')rows=rows.filter(w=>w.status==='In Progress');
-  else if(WO_FILTER==='done')rows=rows.filter(DB.isDone);
-  else if(WO_FILTER==='mine')rows=rows.filter(w=>DB.isActive(w)&&(w.assignedTo||'')===meName);
-  else if(WO_FILTER==='unassigned')rows=rows.filter(w=>DB.isActive(w)&&!w.assignedTo);
-  rows.sort((a,b)=>(DB.woDate(b)||'').localeCompare(DB.woDate(a)||''));
-  const openN=all.filter(DB.isOpen).length;
-  const progN=all.filter(w=>w.status==='In Progress').length;
-  const mineN=all.filter(w=>DB.isActive(w)&&(w.assignedTo||'')===meName).length;
-  const unassignedN=all.filter(w=>DB.isActive(w)&&!w.assignedTo).length;
-  const hours=all.filter(DB.isDone).reduce((s,w)=>s+(DB.num(w.hours)||0),0);
-  const title={all:'All work orders',mine:'Assigned to you',open:'Pending',
-    progress:'In progress',done:'Completed',unassigned:'Nobody assigned'}[WO_FILTER];
-  return `
-  <h1 class="page">Work Orders</h1>
-  <p class="sub">${all.length} work order${all.length===1?'':'s'} on record · ${hours.toFixed(1)}h logged</p>
-  <div class="grid g4" style="margin-bottom:20px">
-    <div class="stat click" onclick="setWOFilter('mine')"><div class="n">${mineN}</div><div class="l">Assigned to you</div></div>
-    <div class="stat click" onclick="setWOFilter('open')"><div class="n">${openN}</div><div class="l">Pending</div></div>
-    <div class="stat click" onclick="setWOFilter('progress')"><div class="n">${progN}</div><div class="l">In progress</div></div>
-    <div class="stat click" onclick="setWOFilter('unassigned')"><div class="n" style="color:${unassignedN?'var(--bad)':'inherit'}">${unassignedN}</div><div class="l">Nobody assigned</div></div>
-  </div>
-  <div class="chipset">
-    <button class="btn filled" onclick="openWorkChooser()">&#43; Raise work</button>
-    <div class="vtog">
-      <button class="${WO_VIEW==='list'?'on':''}" onclick="setWOView('list')">&#9776; List</button>
-      <button class="${WO_VIEW==='calendar'?'on':''}" onclick="setWOView('calendar')">&#128197; Calendar</button>
-    </div>
-    ${WO_VIEW==='list'?`
-      <button class="fchip ${WO_FILTER==='all'?'on':''}" onclick="setWOFilter('all')">All</button>
-      <button class="fchip ${WO_FILTER==='mine'?'on':''}" onclick="setWOFilter('mine')">Mine</button>
-      <button class="fchip ${WO_FILTER==='open'?'on':''}" onclick="setWOFilter('open')">Pending</button>
-      <button class="fchip ${WO_FILTER==='unassigned'?'on':''}" onclick="setWOFilter('unassigned')">Unassigned</button>
-      <button class="fchip ${WO_FILTER==='done'?'on':''}" onclick="setWOFilter('done')">Completed</button>`:''}
-    <button class="btn out" onclick="exportCSV('wos')">Export CSV</button>
-  </div>
-  ${WO_VIEW==='calendar'?renderWOCalendar():`
-  <div class="card" style="padding:6px 20px 20px">
-    <h3 class="sec" style="margin-top:16px">${esc(title)}</h3>
-    ${renderTable([
-      {label:'WO',render:r=>`<b class="mono">${esc(r.id)}</b>`},
-      {label:'Description',render:r=>`<b>${esc(r.description||'—')}</b> ${docChip(r.docUrl,'Reference document')}<br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}${r.pmId?' · from '+esc(r.pmId):''}${r.stopId?' · from '+esc(r.stopId):''}</small>`},
-      {label:'Type',hideSm:true,render:r=>`<span class="chip c-open">${esc(r.type||'—')}</span>`},
-      {label:'Priority',render:r=>prioChip(r.priority)},
-      {label:'Assigned to',render:r=>r.assignedTo
-        ?(r.assignedTo===meName?`<b>${esc(r.assignedTo)}</b>`:esc(r.assignedTo))
-        :'<span class="chip c-crit">Nobody</span>'},
-      {label:'Scheduled',hideSm:true,render:r=>fmtDate(r.dateDue||r.dateRequested)},
-      {label:'Status',render:r=>statusChip(r.status)}
-    ],rows,{empty:'No work orders in this view.',onRow:'editWO'})}
-  </div>`}`;}
-
 const MONTHS=['January','February','March','April','May','June','July','August','September','October','November','December'];
 const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 function calShift(n){
@@ -1805,7 +1732,8 @@ function saveWO(isNew){
   if(!d.assetId){toast('Pick the equipment this work order is for');return;}
   if(isNew&&DB.get('wos',d.id)){toast('That work order number already exists');return;}
   if(d.docUrl&&!safeUrl(d.docUrl)){toast('The document link is not a valid web address');return;}
-  DB.upsert('wos',d);Modal.close();route();toast('Work order '+d.id+' saved');}
+  DB.upsert('wos',d);Modal.close();
+  WORK_TAB='wo';route();toast('Work order '+d.id+' saved');}
 
 function closeWO(id){
   const d=F.read();
@@ -1820,8 +1748,8 @@ function closeWO(id){
   if(!d.assignedTo)d.assignedTo=DB.getWho();
   d.completedBy=DB.getWho();
   DB.upsert('wos',d);
-  /* A work order generated from a PM is how that PM gets done. Closing it
-     must leave the same evidence as marking the PM complete directly. */
+  /* A work order generated from a PM is how that PM gets done. Closing
+     it must leave the same evidence as marking the PM complete. */
   const w=DB.get('wos',id);
   if(w&&w.pmId){
     const p=DB.get('pms',w.pmId);
@@ -1837,6 +1765,82 @@ function closeWO(id){
 function delWO(id){
   confirmDelete('Delete work order '+id+'?',()=>{
     DB.remove('wos',id);Modal.close();route();toast('Work order deleted');});}
+
+/* ============================================================
+   SPARE PARTS
+   ============================================================ */
+function renderParts(){
+  const rows=DB.all('parts').filter(p=>matches(p,['id','description','mfrPn','vendor','location','assetId']));
+  const value=rows.reduce((s,p)=>{
+    const q=DB.num(p.qty),c=DB.num(p.cost);
+    return s+(q!==null&&c!==null?q*c:0);},0);
+  const low=rows.filter(p=>DB.partStatus(p).label==='Low stock').length;
+  return `
+  <h1 class="page">Spare Parts</h1>
+  <p class="sub">${rows.length} part${rows.length===1?'':'s'} in the crib</p>
+  <div class="grid g4" style="margin-bottom:20px">
+    <div class="stat"><div class="n">${rows.length}</div><div class="l">Parts tracked</div></div>
+    <div class="stat"><div class="n" style="color:${low?'var(--bad)':'inherit'}">${low}</div><div class="l">At or below minimum</div></div>
+    <div class="stat"><div class="n">${rows.filter(p=>DB.num(p.qty)===null).length}</div><div class="l">Not yet counted</div></div>
+    <div class="stat"><div class="n">${value?'$'+value.toLocaleString(undefined,{maximumFractionDigits:0}):'—'}</div><div class="l">Inventory value</div></div>
+  </div>
+  <div class="chipset">
+    <button class="btn filled" onclick="editPart()">&#43; New part</button>
+    <button class="btn out" onclick="exportCSV('parts')">Export CSV</button>
+  </div>
+  <div class="card" style="padding:6px 20px 20px">
+    <h3 class="sec" style="margin-top:16px">Parts list</h3>
+    ${renderTable([
+      {label:'Part number',render:r=>`<b class="mono">${esc(r.id)}</b>`},
+      {label:'Description',render:r=>`<b>${esc(r.description||'—')}</b> ${docChip(r.docUrl,'Spec sheet')}<br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>`},
+      {label:'Mfr P/N',hideSm:true,render:r=>`<span class="mono">${esc(r.mfrPn||'—')}</span>`},
+      {label:'Vendor',key:'vendor',hideSm:true},
+      {label:'Location',render:r=>`<span class="mono">${esc(r.location||'—')}</span>`},
+      {label:'On hand',num:true,render:r=>r.qty??'—'},
+      {label:'Min',num:true,hideSm:true,render:r=>r.min??'—'},
+      {label:'Status',render:r=>{const s=DB.partStatus(r);return `<span class="chip ${s.cls}">${s.label}</span>`;}},
+      {label:'',render:r=>`<button class="btn tonal sm" onclick="event.stopPropagation();countPart('${jsq(r.id)}')">Count</button>`}
+    ],rows,{empty:'No parts yet.',onRow:'editPart'})}
+  </div>`;}
+
+function editPart(id,presetAsset){
+  if(id&&!DB.get('parts',id)){toast('That part no longer exists');route();return;}
+  const p=id?DB.get('parts',id):{};
+  const isNew=!id;
+  Modal.open({title:isNew?'New part':'Part '+p.id,
+    body:`${safeUrl(p.imageUrl)?`<div class="prev"><img src="${esc(safeUrl(p.imageUrl))}" alt="" onerror="this.parentNode.style.display='none'"/></div>`:''}
+      ${F.text('id','Part number',p.id||DB.nextId('parts','P-',4),{required:true,readonly:!isNew})}
+      ${F.text('description','Description',p.description,{required:true})}
+      ${F.select('assetId','Used on equipment',p.assetId||presetAsset||'',assetOptions())}
+      <div class="f2">
+        <div>${F.text('mfrPn','Manufacturer part number',p.mfrPn)}</div>
+        <div>${F.text('vendor','Vendor',p.vendor)}</div>
+        <div>${F.text('location','Storage location',p.location,{placeholder:'e.g. SP1-E3-A5'})}</div>
+        <div>${F.num('cost','Unit cost',p.cost,{step:'0.01'})}</div>
+        <div>${F.num('qty','Quantity on hand',p.qty,{step:'1'})}</div>
+        <div>${F.num('min','Minimum quantity',p.min,{step:'1'})}</div>
+      </div>
+      ${F.text('imageUrl','Picture link',p.imageUrl,{placeholder:'https://…'})}
+      ${F.text('docUrl','Spec sheet / manual link',p.docUrl,{placeholder:'https://…',hint:LINK_HINT})}`,
+    footer:`<button class="btn filled" onclick="savePart(${isNew})">Save part</button>
+      <button class="btn out" onclick="Modal.close()">Cancel</button>
+      ${!isNew&&DB.can('delete')?`<button class="btn bad" style="margin-left:auto" onclick="delPart('${jsq(p.id)}')">Delete</button>`:''}`});}
+
+function savePart(isNew){
+  const d=F.read();
+  if(!d.id||!d.description){toast('Part number and description are required');return;}
+  if(isNew&&DB.get('parts',d.id)){toast('That part number already exists');return;}
+  if(d.docUrl&&!safeUrl(d.docUrl)){toast('The document link is not a valid web address');return;}
+  DB.upsert('parts',d);Modal.close();route();toast('Part '+d.id+' saved');}
+function delPart(id){
+  confirmDelete('Delete part '+id+'?',()=>{DB.remove('parts',id);Modal.close();route();toast('Part deleted');});}
+function countPart(id){
+  const p=DB.get('parts',id);
+  if(!p){toast('That part no longer exists');route();return;}
+  const v=prompt('Quantity on hand for '+id+' ('+(p.description||'')+'):',p.qty??'');
+  if(v===null)return;
+  DB.upsert('parts',{id,qty:v.trim(),countedBy:DB.getWho(),countedOn:today()});
+  route();toast(id+' counted — '+v+' on hand');}
 
 /* ============================================================
    CSV IMPORT (admin)
@@ -1933,13 +1937,14 @@ function runImport(){
          "2026-09-15T08:30". Normalise so durations compute. */
       ['startedAt','endedAt'].forEach(k=>{
         if(r[k])r[k]=String(r[k]).trim().replace(' ','T').slice(0,16);});
-      /* Anything that is not clearly a defect is downtime. */
       const k=String(r.kind||'').toLowerCase();
       r.kind=k.includes('defect')||k.includes('quality')||k.includes('scrap')?'defect':'downtime';}});
   const {added,updated}=DB.bulkUpsert(IMPORT.entity,clean);
   const ent=IMPORT.entity;
   cancelImport();
   toast(`Imported — ${added} added, ${updated} updated`);
+  if(ent==='wos')WORK_TAB='wo';
+  if(ent==='pms')WORK_TAB='pm';
   location.hash='#/'+({assets:'assets',pms:'pm',parts:'parts',wos:'wo',
     pmlogs:'compliance',stops:'stops'}[ent]);}
 
@@ -1995,8 +2000,7 @@ function renderUsers(){
         <tr><td><b>Import CSV</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
         <tr><td><b>Manage users</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
       </tbody></table></div>
-    <div class="note">Nobody can edit a PM completion record once written — not even an admin.
-    That is what makes the compliance history worth something.</div>
+    <div class="note">Nobody can edit a PM completion record once written — not even an admin.</div>
   </div>`;}
 
 function refreshUsers(){
@@ -2159,7 +2163,6 @@ function seedSample(){
   const back=n=>DB.addDays(d,-n);
   const me=DB.getWho();
   const ago=n=>Stops.minutesAgo(n);
-
   DB.bulkUpsert('assets',[
     {id:'3526',name:'Top Roll Assembly',manufacturer:'3Con',model:'TR-900',project:'3527',
       location:'Ultrasonic weld cell',status:'Active',owner:me,hourlyCost:'850',
@@ -2190,8 +2193,6 @@ function seedSample(){
     {id:'PMC-00003',pmId:'PM-004',assetId:'3526',description:'Clean/replace main air supply filters',
       frequency:'monthly',dueDate:back(21),doneDate:back(21),daysLate:0,by:me,hours:'1',
       notes:'Replaced both element filters, drained separator.'}]);
-  /* A realistic mix: closed events with real fixes, one still open,
-     and a repeat so the pattern detection has something to find. */
   DB.bulkUpsert('stops',[
     {id:'EV-00001',kind:'downtime',assetId:'3526',reason:'Electrical fault',
       startedAt:ago(300),endedAt:ago(180),by:me,closedBy:me,
@@ -2249,7 +2250,7 @@ function seedSample(){
   window.addEventListener('online',()=>{
     if(DB.status().mode!=='cloud')reconnect();});
   /* Open stoppages count up live. One minute is precise enough and
-     cheap — it only re-renders when a stoppage is actually open. */
+     cheap — it only re-renders when something is actually open. */
   setInterval(()=>{
     if(document.hidden)return;
     if(!Stops.open().length)return;
