@@ -67,7 +67,6 @@ const Insights = (() => {
     const d=new Date(String(dateish).slice(0,10)+'T00:00:00');
     if(isNaN(d))return null;
     return Math.round((new Date()-d)/86400000);}
-
   function similarRepairs(opts={}){
     const {assetId='',description='',cause='',excludeId='',limit=5}=opts;
     const done=DB.all('wos').filter(w=>DB.isDone(w)&&w.id!==excludeId&&(w.description||w.notes));
@@ -99,7 +98,6 @@ const Insights = (() => {
       const causeMatch=cause&&cause!=='To be determined'&&s.wo.cause===cause;
       return wordMatch||causeMatch;
     }).sort((a,b)=>b.score-a.score).slice(0,limit);}
-
   /* Only closed records with a real fix note. An open stoppage has no
      lesson yet, and one closed blank teaches nobody anything. */
   function similarStops(opts={}){
@@ -135,7 +133,6 @@ const Insights = (() => {
       const reasonMatch=reason&&s.stop.reason===reason;
       return wordMatch||reasonMatch;
     }).sort((a,b)=>b.score-a.score).slice(0,limit);}
-
   /* One ranked list across both. A technician does not care whether
      the answer came from a work order or a downtime record. */
   function findLessons(opts={}){
@@ -143,7 +140,6 @@ const Insights = (() => {
     const wos=similarRepairs(Object.assign({},opts,{limit}));
     const stops=similarStops(Object.assign({},opts,{limit}));
     return wos.concat(stops).sort((a,b)=>b.score-a.score).slice(0,limit);}
-
   function repeatFailures(opts={}){
     const {windowDays=365,minCount=3}=opts;
     const cutoff=new Date();cutoff.setDate(cutoff.getDate()-windowDays);
@@ -172,7 +168,6 @@ const Insights = (() => {
       out.push({assetId:g.assetId,cause:g.cause,count:g.wos.length,hours,cost,avgGap,wos:g.wos,
         last:g.wos[0].dateCompleted||g.wos[0].dateRequested||''});});
     return out.sort((a,b)=>b.count-a.count||b.hours-a.hours);}
-
   function assetHealth(assetId){
     const wos=DB.forAsset('wos',assetId);
     const done=wos.filter(DB.isDone);
@@ -199,7 +194,6 @@ const Insights = (() => {
     return{total:done.length,open:wos.filter(DB.isActive).length,hours,cost,topCauses,
       meanGap,topPeople,undocumented,
       lastRepair:dates.length?dates[dates.length-1].toISOString().slice(0,10):''};}
-
   function dataQuality(){
     const done=DB.all('wos').filter(DB.isDone);
     const noNotes=done.filter(w=>!w.notes||w.notes.trim().length<15).length;
@@ -212,7 +206,6 @@ const Insights = (() => {
     return{done:done.length,noNotes,usable,total,
       stops:closedStops.length,stopsDocumented:usableStop,
       pct:total?Math.round((usable/total)*100):0};}
-
   function ago(days){
     if(days===null||days===undefined)return '';
     if(days<0)return 'in the future';
@@ -222,7 +215,6 @@ const Insights = (() => {
     if(days<60)return Math.round(days/7)+' weeks ago';
     if(days<730)return Math.round(days/30)+' months ago';
     return Math.round(days/365)+' years ago';}
-
   return{similarRepairs,similarStops,findLessons,repeatFailures,assetHealth,dataQuality,ago,tokenize};
 })();
 if (typeof module !== 'undefined') module.exports = Insights;

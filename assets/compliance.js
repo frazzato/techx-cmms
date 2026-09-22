@@ -1,11 +1,9 @@
 /* ============================================================
    compliance.js — PM completion history and compliance
    Every completion writes one immutable record. daysLate is
-   frozen at write time because the schedule can change later;
-   the history must describe what actually happened.
+   frozen at write time because the schedule can change later.
    ============================================================ */
 const Compliance = (() => {
-  /* A PM due Friday and done Monday is normal shop reality. */
   const GRACE_DAYS = 2;
   function daysBetween(fromIso,toIso){
     if(!fromIso||!toIso)return null;
@@ -37,8 +35,6 @@ const Compliance = (() => {
     const late=logs.filter(l=>!onTime(l)).length;
     const hours=logs.reduce((s,l)=>s+(DB.num(l.hours)||0),0);
     const documented=logs.filter(l=>l.notes&&l.notes.trim().length>=10).length;
-    /* Currently overdue is a different question from historical
-       compliance — "are we behind now" vs "did we do them on time". */
     const overdueNow=DB.all('pms').filter(p=>{
       if(assetId&&p.assetId!==assetId)return false;
       if(pmId&&p.id!==pmId)return false;
@@ -80,7 +76,6 @@ const Compliance = (() => {
     return Array.from(map.values())
       .map(e=>Object.assign(e,{pct:e.done?Math.round(((e.done-e.late)/e.done)*100):0}))
       .sort((a,b)=>b.done-a.done);}
-  /* A schedule never once completed is what an auditor finds first. */
   function neverDone(){
     const seen=new Set(DB.all('pmlogs').map(l=>l.pmId));
     return DB.all('pms').filter(p=>!seen.has(p.id));}

@@ -1,21 +1,22 @@
 /* ============================================================
    app.js — router + screens
 
-   NAVIGATION mirrors the home screen. Home offers two actions —
-   "Raise work" and "Report a problem" — so the sidebar carries
-   the same two ideas rather than four separate entries:
+   ROLE-BASED VIEWS
+   Maintenance sees the five screens a technician needs on the
+   floor. Admin sees everything. The list lives in VIEWS below —
+   that is the single place to change who sees what.
 
-     Work      = Work Orders + PM Plan, tabbed on one screen
-     Problems  = downtime and defects
+   Two rules this follows:
 
-   Work Orders and PM keep their own screens, their own data and
-   their own behaviour. Only the way in is shared, so a technician
-   does not have to know which menu a job lives under.
+   1. The ROUTER enforces it, not the menu. Hiding a nav item is
+      cosmetic; anyone can type #/compliance. Every route is
+      checked on entry.
 
-   NAMING: the user-facing word is "Equipment". The stored
-   collection is still "assets" and the route is still #/asset/… —
-   renaming those would orphan existing records and break every QR
-   tag already stuck on a machine.
+   2. Restricting SCREENS is not the same as restricting DATA.
+      The API still returns the full register to any signed-in
+      user, because a technician standing at a machine needs its
+      history to do the job. What stays admin-only is writes that
+      are hard to undo: delete, import, and user management.
    ============================================================ */
 
 const FREQS = ['daily','weekly','biweekly','monthly','quarterly','semiannual','annually'];
@@ -27,18 +28,46 @@ const CAUSES = ['To be determined','Wear / end of life','Seal failure','Loose fa
 const ROLE_LABEL = { admin:'Admin', maintenance:'Maintenance' };
 const LINK_HINT = 'Paste a SharePoint or web address. Opens in a new tab — the file stays where it lives.';
 
+/* ---------- who sees what ----------
+   Edit this and the menu, the router and the landing page all
+   follow. Nothing else needs changing. */
+const VIEWS = {
+  maintenance: [
+    'home',        /* the launcher — the two big buttons live here */
+    'assets',      /* Equipment */
+    'asset',       /* an individual machine, incl. QR scan target */
+    'work',        /* Work Orders + PM Plan */
+    'wo', 'pm',    /* the old routes, so existing links keep working */
+    'stops',       /* Problems */
+    'parts',       /* Spare Parts */
+    'smart',       /* Smart Assist */
+    'settings',    /* password + sign out only, see renderSettings */
+    'login'
+  ],
+  admin: 'all'
+};
+
+function canView(name){
+  const role=DB.role();
+  if(!role)return name==='login';
+  const allowed=VIEWS[role];
+  if(allowed==='all'||!allowed)return true;
+  return allowed.includes(name);}
+
+/* Where a role lands, and where it gets sent when it asks for
+   something it cannot open. */
+const HOME_FOR = { maintenance:'home', admin:'home' };
+
 let SEARCH='', WO_VIEW='list', WO_FILTER='all', PM_FILTER='all';
 let CAL={y:new Date().getFullYear(),m:new Date().getMonth(),pms:true};
 let USERS=[], SMART_Q='', SMART_ASSET='', COMP_DAYS=90, COMP_ASSET='';
 let STOP_DAYS=30, STOP_KIND='', STOP_ASSET='';
-/* Which half of the combined Work screen is showing. */
 let WORK_TAB='wo';
 
 const ROUTES={home:renderHome,dashboard:renderDashboard,assets:renderAssets,asset:renderAssetDetail,
   work:renderWork,pm:renderWork,wo:renderWork,
   parts:renderParts,qr:renderQR,smart:renderSmart,compliance:renderCompliance,
   stops:renderStops,import:renderImport,users:renderUsers,settings:renderSettings,login:renderLogin};
-const ADMIN_ROUTES=['import','users'];
 
 function route(){
   const hash=(location.hash||'#/home').replace('#/','');
@@ -47,19 +76,20 @@ function route(){
   const param=parts[1]?decodeURIComponent(parts[1]):null;
   const st=DB.status();
 
-  /* #/wo and #/pm still work — old bookmarks, links inside the app
-     and anything already shared keep resolving. They simply open the
-     combined screen on the right tab. */
+  /* #/wo and #/pm still work — old bookmarks and shared links keep
+     resolving, they just open the combined screen on the right tab. */
   if(name==='wo')WORK_TAB='wo';
   if(name==='pm')WORK_TAB='pm';
 
   if(!st.signedIn&&name!=='login'){
     document.getElementById('view').innerHTML=renderLogin();updateChrome();return;}
-  if(ADMIN_ROUTES.includes(name)&&!DB.isAdmin()){
+
+  /* The router is the gate. A hidden menu item is not security —
+     this is what actually stops someone typing the address. */
+  if(!canView(name)){
     document.getElementById('view').innerHTML=renderNoAccess(name);updateChrome();return;}
 
   const fn=ROUTES[name]||renderHome;
-  /* One nav item lights up for the whole Work family. */
   const navFor=['work','wo','pm'].includes(name)?'work'
     :name==='asset'?'assets':name;
   document.querySelectorAll('.rail .nav').forEach(a=>
@@ -79,20 +109,25 @@ function matches(obj,fields){
   return fields.some(f=>String(obj[f]??'').toLowerCase().includes(SEARCH));}
 function openAsset(id){location.hash='#/asset/'+encodeURIComponent(id);}
 
+/* Honest about why, and gives a way back rather than a dead end. */
 function renderNoAccess(name){
+  const label={users:'Users',import:'Import CSV',compliance:'PM Compliance',
+    dashboard:'Dashboard',qr:'QR Tags'}[name]||'That screen';
   return `<h1 class="page">Not available</h1>
-    <p class="sub">The <b>${esc(name==='users'?'Users':'Import CSV')}</b> screen is for admins.</p>
+    <p class="sub"><b>${esc(label)}</b> is not part of the maintenance view.</p>
     <div class="placeholder"><div style="font-size:30px">&#128274;</div>
       <b style="display:block;margin:10px 0 6px;color:var(--ink);font-size:16px">Admins only</b>
-      <span>You are signed in as <b>${esc(DB.getWho())}</b> (Maintenance).</span>
+      <span>You are signed in as <b>${esc(DB.getWho())}</b> (${esc(ROLE_LABEL[DB.role()]||DB.role())}).<br>
+      Ask an admin if you need this.</span>
       <div class="actions" style="justify-content:center"><a class="btn filled" href="#/home">Back to home</a></div>
     </div>`;}
 
 function updateChrome(){
-  const admin=DB.isAdmin();
-  document.querySelectorAll('.rail .adminonly').forEach(el=>{el.style.display=admin?'':'none';});
-  /* A red dot on the Problems nav item whenever something is down —
-     visible from every screen without having to open anything. */
+  /* Menu items follow the same list the router enforces, so the two
+     can never drift apart. */
+  document.querySelectorAll('.rail .nav').forEach(el=>{
+    const s=el.dataset.s;
+    el.style.display=(!s||canView(s))?'':'none';});
   const dot=document.getElementById('navStopDot');
   if(dot){
     const n=(typeof Stops!=='undefined')?Stops.open().length:0;
@@ -139,7 +174,7 @@ function doLogin(){
   DB.login(u.trim(),p).then(user=>
     DB.connect().then(r=>{
       if(r.mode==='cloud')DB.startPolling(15);
-      location.hash='#/home';route();
+      location.hash='#/'+(HOME_FOR[user.role]||'home');route();
       toast('Signed in as '+user.name);
       if(user.mustChange)setTimeout(()=>openChangePassword(true),400);})
   ).catch(e=>{
@@ -164,6 +199,15 @@ function runDiagnostics(){
     else if(!d.hasAdminPassword&&d.userCount===0)advice=`<b>No accounts exist yet.</b> Add the three <span class="mono">ADMIN_*</span> variables, then <b>redeploy</b>.`;
     else if(d.userCount===0)advice=`<b>Configured, but no account was created.</b> Redeploy once more.`;
     else if(d.ok)advice=`<b>Everything is working.</b> ${d.userCount} account${d.userCount===1?'':'s'} exist.`;
+    /* Record counts answer "is the data actually on the server" from a
+       phone, without opening a SQL console. */
+    let counts='';
+    if(d.recordCounts){
+      const keys=Object.keys(d.recordCounts);
+      counts=keys.length
+        ? `<div style="margin-top:10px"><b>Records in the shared database:</b><br>`+
+          keys.map(k=>`${k==='assets'?'equipment':k}: <b>${d.recordCounts[k]}</b>`).join(' · ')+`</div>`
+        : `<div style="margin-top:10px"><b>The database is empty.</b> Nothing has been saved to the server yet.</div>`;}
     msg.innerHTML=`<div class="note ${d.ok?'':'bad'}">
       ${row(d.hasDatabaseUrl,'DATABASE_URL is set')}
       ${row(d.driverLoads,'Database driver loads')}
@@ -172,6 +216,7 @@ function runDiagnostics(){
       ${row(d.hasAdminUsername,'ADMIN_USERNAME is set')}
       ${row(d.hasAdminPassword,'ADMIN_PASSWORD is set')}
       ${d.userCount!=null?row(d.userCount>0,d.userCount+' account(s) exist'):''}
+      ${counts}
       ${d.error?`<div style="margin-top:8px"><b>Error:</b> ${esc(d.error)}</div>`:''}
       ${advice?`<div style="margin-top:10px;line-height:1.7">${advice}</div>`:''}</div>`;
   }).catch(e=>{
@@ -247,8 +292,6 @@ function openStopChooser(presetAsset){
     difference is whether the machine failed or the process did.</div>`,
     footer:`<button class="btn out" onclick="Modal.close()">Cancel</button>`});}
 
-/* The two big buttons, reused on Home and at the top of Work and
-   Problems so the same pair is always within reach. */
 function bigActions(presetAsset){
   const a=presetAsset?`'${jsq(presetAsset)}'`:'';
   return `<div class="bigactions">
@@ -264,16 +307,9 @@ function bigActions(presetAsset){
 
 /* ============================================================
    WORK — Work Orders and PM under one nav item
-   ------------------------------------------------------------
-   Two tabs on one screen. Both keep their own table, filters and
-   behaviour exactly as before; only the entry point is shared.
-   Switching tab updates the hash so the back button and a shared
-   link both land where the person expects.
    ============================================================ */
 function setWorkTab(tab){
   WORK_TAB=tab;
-  /* Keep the address bar honest without pushing a history entry
-     for every tab flick. */
   const want='#/'+(tab==='pm'?'pm':'wo');
   if(location.hash!==want){location.hash=want;return;}
   route();}
@@ -286,9 +322,7 @@ function renderWork(){
   return `
   <h1 class="page">Work</h1>
   <p class="sub">Work orders and preventive maintenance.</p>
-
   ${bigActions()}
-
   <div class="worktabs">
     <button class="worktab ${WORK_TAB==='wo'?'on':''}" onclick="setWorkTab('wo')">
       <span class="wt-ic">&#129534;</span>
@@ -299,10 +333,8 @@ function renderWork(){
       <span class="wt-txt"><b>PM Plan</b><span>${pms.length} scheduled${overdueN?' · '+overdueN+' overdue':''}</span></span>
     </button>
   </div>
-
   ${WORK_TAB==='pm'?renderPMBody():renderWOBody()}`;}
 
-/* ---------- work orders ---------- */
 function setWOView(v){WO_VIEW=v;route();}
 function setWOFilter(f){WO_FILTER=f;WORK_TAB='wo';route();}
 
@@ -360,7 +392,6 @@ function renderWOBody(){
     ],rows,{empty:'No work orders in this view.',onRow:'editWO'})}
   </div>`}`;}
 
-/* ---------- PM plan ---------- */
 function setPMFilter(f){PM_FILTER=f;WORK_TAB='pm';route();}
 
 function renderPMBody(){
@@ -377,6 +408,9 @@ function renderPMBody(){
   const unassigned=all.filter(r=>!r.tech).length;
   const mine=all.filter(r=>(r.tech||'')===meName).length;
   const comp=Compliance.summary({days:90});
+  /* The compliance screen is admin-only, so only offer the link to
+     someone who can actually open it. */
+  const showComp=canView('compliance');
   return `
   <div class="grid g4" style="margin-bottom:20px">
     <div class="stat click" onclick="setPMFilter('all')"><div class="n">${all.length}</div><div class="l">Scheduled PMs</div></div>
@@ -385,19 +419,18 @@ function renderPMBody(){
     <div class="stat click" onclick="setPMFilter('never')"><div class="n" style="color:${never.size?'var(--bad)':'var(--ok)'}">${never.size}</div><div class="l">Never completed</div></div>
   </div>
   <div class="chipset">
-    <a class="btn tonal" href="#/compliance">&#9989; Compliance record</a>
+    ${showComp?'<a class="btn tonal" href="#/compliance">&#9989; Compliance record</a>':''}
     <button class="fchip ${PM_FILTER==='all'?'on':''}" onclick="setPMFilter('all')">All</button>
     <button class="fchip ${PM_FILTER==='mine'?'on':''}" onclick="setPMFilter('mine')">Mine</button>
     <button class="fchip ${PM_FILTER==='overdue'?'on':''}" onclick="setPMFilter('overdue')">Overdue</button>
     <button class="fchip ${PM_FILTER==='never'?'on':''}" onclick="setPMFilter('never')">Never done</button>
     <button class="fchip ${PM_FILTER==='unassigned'?'on':''}" onclick="setPMFilter('unassigned')">Unassigned</button>
     <button class="btn out" onclick="exportCSV('pms')">Export CSV</button>
-    <span style="color:var(--muted);font-size:12.5px;margin-left:auto">
-      <a href="#/compliance">${comp.pct===null?'no':comp.pct+'%'} on-time over 90 days</a></span>
+    ${showComp?`<span style="color:var(--muted);font-size:12.5px;margin-left:auto">
+      <a href="#/compliance">${comp.pct===null?'no':comp.pct+'%'} on-time over 90 days</a></span>`:''}
   </div>
   ${never.size&&PM_FILTER==='all'?`<div class="note bad">
     <b>${never.size} PM${never.size===1?' has':'s have'} never been marked complete.</b>
-    If the work is happening but not being logged, it cannot be proven.
     <a href="#" onclick="setPMFilter('never');return false;">Show them</a>.</div>`:''}
   <div class="card" style="padding:6px 20px 20px">
     <h3 class="sec" style="margin-top:16px">${PM_FILTER==='all'?'Schedule':PM_FILTER==='mine'?'Your PMs':PM_FILTER==='overdue'?'Overdue':PM_FILTER==='never'?'Never completed':'Nobody responsible'}</h3>
@@ -423,10 +456,6 @@ function renderPMBody(){
 
 /* ============================================================
    DOWNTIME AND DEFECTS
-   ------------------------------------------------------------
-   Reporting has to be fast — the machine is down while the
-   technician is typing. Closing is the part that usually rots, so
-   open stoppages get a permanent banner and a one-tap close.
    ============================================================ */
 const STOP_QUICK = [
   { mins: 0,   label: 'Just now' },
@@ -678,10 +707,8 @@ function renderStops(){
   return `
   <h1 class="page">Problems</h1>
   <p class="sub">Downtime and defects — how much production was lost, and why.</p>
-
   ${openStopsBanner()}
   ${bigActions()}
-
   <div class="chipset">
     <button class="fchip ${STOP_DAYS===7?'on':''}" onclick="setStopDays(7)">7 days</button>
     <button class="fchip ${STOP_DAYS===30?'on':''}" onclick="setStopDays(30)">30 days</button>
@@ -695,7 +722,6 @@ function renderStops(){
     </select>
     <button class="btn out" onclick="exportStops()">&#128196; Export</button>
   </div>
-
   <div class="grid g4" style="margin-bottom:20px">
     <div class="stat"><div class="n" style="color:${s.mins?'var(--bad)':'var(--ok)'}">${Stops.fmtMins(s.mins)}</div>
       <div class="l">Production lost</div><div class="d">last ${STOP_DAYS} days</div></div>
@@ -707,13 +733,10 @@ function renderStops(){
       <div class="l">Estimated cost</div>
       <div class="d">${s.cost===null?'set an hourly rate on equipment':'from equipment hourly rates'}</div></div>
   </div>
-
   ${s.staleCount?`<div class="note bad">
     <b>${s.staleCount} record${s.staleCount===1?'':'s'} open for more than ${Stops.STALE_HOURS} hours.</b>
     Almost certainly forgotten rather than genuinely still down. They are kept
-    out of the totals above until closed, so the numbers stay honest — but
-    close them with the real time to get the lost production counted.</div>`:''}
-
+    out of the totals above until closed, so the numbers stay honest.</div>`:''}
   ${repeats.length?`<div class="card">
     <h3 class="sec">Same thing, again and again — 3+ times this year</h3>
     <div class="repeats">
@@ -734,7 +757,6 @@ function renderStops(){
     <div class="note">The same reason on the same machine three times is a
     root-cause problem, not bad luck.</div>
   </div>`:''}
-
   ${pareto.length?`<div class="card">
     <h3 class="sec">Where the time actually goes</h3>
     <div class="tablewrap"><table>
@@ -750,10 +772,8 @@ function renderStops(){
           <small style="color:var(--muted)">${r.pct}% · running ${r.cumPct}%</small>
         </td></tr>`).join('')}</tbody>
     </table></div>
-    <div class="note">Sorted by time lost, not by how often it happens.
-    Twelve two-minute jams matter less than one six-hour electrical fault.</div>
+    <div class="note">Sorted by time lost, not by how often it happens.</div>
   </div>`:''}
-
   ${worst.length?`<div class="card">
     <h3 class="sec">Worst equipment — last ${STOP_DAYS} days</h3>
     ${renderTable([
@@ -764,7 +784,6 @@ function renderStops(){
       {label:'Total lost',num:true,render:r=>`<b>${Stops.fmtMins(r.mins)}</b>`}
     ],worst,{onRow:'openAsset'})}
   </div>`:''}
-
   <div class="card">
     <h3 class="sec">Recent events</h3>
     ${renderTable([
@@ -784,8 +803,7 @@ function renderStops(){
         : '<span style="color:var(--muted)">—</span>'}
     ],Stops.recent(40),{empty:'Nothing logged yet.',onRow:'viewStop'})}
     ${s.closedCount?`<div class="note">${s.documented} of ${s.closedCount} closed
-      events (${s.docPct}%) recorded what got the machine running. That line is
-      what Smart Assist offers the next person.</div>`:''}
+      events (${s.docPct}%) recorded what got the machine running.</div>`:''}
   </div>`;}
 
 function exportStops(){
@@ -925,7 +943,7 @@ function smartForAsset(id){
     runSmartSearch();},60);}
 
 /* ============================================================
-   HOME — the two buttons the sidebar mirrors
+   HOME
    ============================================================ */
 function renderHome(){
   const assets=DB.all('assets'),wos=DB.all('wos'),pms=DB.all('pms');
@@ -938,6 +956,7 @@ function renderHome(){
   const myPms=pms.filter(p=>(p.tech||'')===meName&&(DB.daysUntil(p.nextDue)??99)<=14);
   const comp=Compliance.summary({days:90});
   const st=Stops.summary({days:30});
+  const showComp=canView('compliance');
 
   if(!assets.length&&!wos.length){
     return `<h1 class="page">Welcome, ${esc(meName)}</h1>
@@ -948,15 +967,13 @@ function renderHome(){
         <div class="actions" style="justify-content:center">
           ${DB.isAdmin()?`<a class="btn filled" href="#/import">Import CSV</a>
           <button class="btn out" onclick="seedSample()">Load sample data</button>`:''}
-          <button class="btn out" onclick="editAsset()">Add first equipment</button></div></div>`;}
+          ${DB.can('createAsset')?`<button class="btn out" onclick="editAsset()">Add first equipment</button>`:''}</div></div>`;}
 
   return `
   <h1 class="page">Home</h1>
   <p class="sub">${esc(DB.raw().meta.site||'Maintenance')} · signed in as <b>${esc(meName)}</b> (${esc(ROLE_LABEL[DB.role()]||DB.role())})</p>
-
   ${openStopsBanner()}
   ${bigActions()}
-
   <div class="grid g4" style="margin-bottom:20px">
     <div class="stat click" onclick="location.hash='#/assets'"><div class="n">${assets.length}</div><div class="l">Equipment in plant</div></div>
     <div class="stat click" onclick="WO_FILTER='open';WORK_TAB='wo';location.hash='#/wo'">
@@ -965,11 +982,13 @@ function renderHome(){
     <div class="stat click" onclick="location.hash='#/stops'">
       <div class="n" style="color:${st.mins?'var(--bad)':'var(--ok)'}">${Stops.fmtMins(st.mins)}</div>
       <div class="l">Lost in 30 days</div><div class="d">${st.closedCount} events</div></div>
-    <div class="stat click" onclick="location.hash='#/compliance'">
+    ${showComp?`<div class="stat click" onclick="location.hash='#/compliance'">
       <div class="n" style="color:${comp.pct===null?'inherit':comp.pct>=90?'var(--ok)':comp.pct>=70?'var(--warn)':'var(--bad)'}">${comp.pct===null?'—':comp.pct+'%'}</div>
-      <div class="l">PM compliance (90d)</div><div class="d">${duePms.length} due this week</div></div>
+      <div class="l">PM compliance (90d)</div><div class="d">${duePms.length} due this week</div></div>`
+    :`<div class="stat click" onclick="WORK_TAB='pm';location.hash='#/pm'">
+      <div class="n" style="color:${duePms.length?'var(--bad)':'inherit'}">${duePms.length}</div>
+      <div class="l">PMs due this week</div></div>`}
   </div>
-
   ${(myWos.length||myPms.length)?`<div class="card"><h3 class="sec">Your work</h3>
     ${myWos.length?renderTable([
       {label:'WO',render:r=>`<b class="mono">${esc(r.id)}</b>`},
@@ -985,7 +1004,6 @@ function renderHome(){
         {label:'',render:r=>`<button class="btn ok sm" onclick="event.stopPropagation();completePM('${jsq(r.id)}')">Mark done</button>`}
       ],myPms,{onRow:'showPMHistory'})}`:''}
   </div>`:''}
-
   ${recent.length?`<div class="card"><h3 class="sec">Recently viewed equipment</h3>
     ${recent.map(a=>`<a class="pill" href="#/asset/${encodeURIComponent(a.id)}"><b>${esc(a.id)}</b> <small>${esc(a.name)}</small></a>`).join('')}</div>`:''}`;}
 
@@ -1102,10 +1120,10 @@ function renderAssets(){
   <h1 class="page">Equipment</h1>
   <p class="sub">${rows.length} item${rows.length===1?'':'s'}${SEARCH?` matching “${esc(SEARCH)}”`:' in the register'} · ${withDocs} with documents linked</p>
   <div class="chipset">
-    <button class="btn filled" onclick="editAsset()">&#43; New equipment</button>
-    <a class="btn out" href="#/qr">QR tags</a>
+    ${DB.can('createAsset')?'<button class="btn filled" onclick="editAsset()">&#43; New equipment</button>':''}
+    ${canView('qr')?'<a class="btn out" href="#/qr">QR tags</a>':''}
     <button class="btn out" onclick="exportCSV('assets')">Export CSV</button>
-    ${DB.isAdmin()?'<a class="btn out" href="#/import">Import CSV</a>':''}
+    ${canView('import')?'<a class="btn out" href="#/import">Import CSV</a>':''}
   </div>
   <div class="card" style="padding:6px 20px 20px">
     <h3 class="sec" style="margin-top:16px">Equipment register</h3>
@@ -1127,7 +1145,8 @@ function renderAssets(){
       {label:'Open WOs',num:true,render:r=>{
         const n=DB.forAsset('wos',r.id).filter(DB.isActive).length;
         return n?`<b style="color:var(--bad)">${n}</b>`:'0';}},
-      {label:'',hideSm:true,render:r=>`<button class="btn out sm" onclick="event.stopPropagation();editAsset('${jsq(r.id)}')">Edit</button>`}
+      {label:'',hideSm:true,render:r=>DB.can('editAsset')
+        ?`<button class="btn out sm" onclick="event.stopPropagation();editAsset('${jsq(r.id)}')">Edit</button>`:''}
     ],rows,{empty:SEARCH?'No equipment matches that search.':'No equipment yet.',onRow:'openAsset'})}
   </div>`;}
 
@@ -1151,6 +1170,7 @@ function renderAssetDetail(id){
   const stopRepeats=Stops.repeats().filter(r=>r.assetId===id);
   const myStops=Stops.forAsset(id).slice(0,8);
   const isDown=Stops.open().some(s=>s.assetId===id);
+  const showComp=canView('compliance');
   return `
   <div class="crumb"><a href="#/home">Home</a> › <a href="#/assets">Equipment</a> › ${esc(a.id)}</div>
   <div class="ahead"><div class="big">&#9881;</div>
@@ -1165,30 +1185,25 @@ function renderAssetDetail(id){
           :`<span class="chip ${a.status==='Down'?'c-crit':a.status==='Retired'?'c-hold':'c-done'}" style="font-size:13px;padding:8px 14px">${esc(a.status||'Active')}</span>`}
       </div></div>
     <div class="qrbox hide-print">${qrSvg(assetUrl(a.id),116)}<small>Scan to open</small>
-      <button class="btn out sm" style="margin-top:8px" onclick="showQR('${jsq(a.id)}')">Tag</button></div>
+      ${canView('qr')?`<button class="btn out sm" style="margin-top:8px" onclick="showQR('${jsq(a.id)}')">Tag</button>`:''}</div>
   </div>
-
   ${(myRepeats.length||stopRepeats.length)?`<div class="note bad">
     <b>Recurring problem on this machine.</b>
     ${myRepeats.map(r=>`<b>${esc(r.cause)}</b> ${r.count} times`).join('; ')}
     ${myRepeats.length&&stopRepeats.length?'; ':''}
     ${stopRepeats.map(r=>`<b>${esc(r.reason)}</b> ${r.count} times (${Stops.fmtMins(r.mins)} lost)`).join('; ')}.
     </div>`:''}
-
   ${bigActions(a.id)}
-
   ${hasDocs?`<div class="card doccard"><h3 class="sec">Documentation</h3>
     <div class="actions" style="margin-top:0">
       ${docLink(a.manualUrl,'Machine manual',{cls:'btn filled',icon:'&#128214;'})}
       ${docLink(a.drawingUrl,'Drawings / schematics',{cls:'btn tonal',icon:'&#128208;'})}
     </div></div>`:''}
-
   <div class="chipset">
-    <button class="btn out" onclick="newPartFor('${jsq(a.id)}')">&#43; Add part</button>
-    <button class="btn out" onclick="editAsset('${jsq(a.id)}')">Edit</button>
+    ${DB.can('createPart')?`<button class="btn out" onclick="newPartFor('${jsq(a.id)}')">&#43; Add part</button>`:''}
+    ${DB.can('editAsset')?`<button class="btn out" onclick="editAsset('${jsq(a.id)}')">Edit</button>`:''}
     <button class="btn out" onclick="smartForAsset('${jsq(a.id)}')">&#128161; Past fixes</button>
   </div>
-
   <div class="grid g4" style="margin-bottom:20px">
     <div class="stat"><div class="ic" style="background:var(--info-c);color:var(--pri)">&#128203;</div>
       <div class="n">${pending.length}</div><div class="l">Pending work orders</div></div>
@@ -1197,15 +1212,16 @@ function renderAssetDetail(id){
       <div class="n" style="color:${st.mins?'var(--bad)':'inherit'}">${Stops.fmtMins(st.mins)}</div>
       <div class="l">Lost in 90 days</div>
       <div class="d">${st.cost!==null?money0(st.cost):st.closedCount+' events'}</div></div>
-    <div class="stat click" onclick="setCompAsset('${jsq(a.id)}');location.hash='#/compliance'">
+    ${showComp?`<div class="stat click" onclick="setCompAsset('${jsq(a.id)}');location.hash='#/compliance'">
       <div class="ic" style="background:var(--ok-c);color:var(--ok)">&#9989;</div>
       <div class="n" style="color:${comp.pct===null?'inherit':comp.pct>=90?'var(--ok)':comp.pct>=70?'var(--warn)':'var(--bad)'}">${comp.pct===null?'—':comp.pct+'%'}</div>
-      <div class="l">PM compliance (1 yr)</div></div>
+      <div class="l">PM compliance (1 yr)</div></div>`
+    :`<div class="stat"><div class="ic" style="background:var(--ok-c);color:var(--ok)">&#128197;</div>
+      <div class="n">${pms.length}</div><div class="l">PM schedules</div></div>`}
     <div class="stat"><div class="ic" style="background:var(--pur-c);color:var(--pur)">&#128736;</div>
       <div class="n">${done.length}</div><div class="l">Repairs completed</div>
       <div class="d">${health.hours.toFixed(1)}h logged</div></div>
   </div>
-
   ${myStops.length?`<div class="card">
     <h3 class="sec">Downtime &amp; defects — last ${myStops.length}</h3>
     ${renderTable([
@@ -1220,7 +1236,6 @@ function renderAssetDetail(id){
         :'<span style="color:var(--muted)">—</span>'}
     ],myStops,{onRow:'viewStop'})}
   </div>`:''}
-
   ${health.total>=2?`<div class="card smartcard">
     <h3 class="sec">&#128161; Failure profile — from ${health.total} completed repairs</h3>
     <div class="grid g2" style="gap:14px">
@@ -1229,7 +1244,6 @@ function renderAssetDetail(id){
       <div>${health.meanGap?`<div class="profile-row"><span>Average time between repairs</span><b>${health.meanGap} days</b></div>`:''}
         ${health.topPeople.length?`<div class="profile-row"><span>Knows this machine best</span><b>${esc(health.topPeople[0].name)}</b></div>`:''}</div>
     </div></div>`:''}
-
   <div class="card"><h3 class="sec">PM program</h3>
     ${renderTable([
       {label:'PM',render:r=>`<b class="mono">${esc(r.id)}</b>`},
@@ -1243,7 +1257,6 @@ function renderAssetDetail(id){
     ],pms.sort((x,y)=>(x.nextDue||'9999').localeCompare(y.nextDue||'9999')),
       {empty:'No PM schedules on this equipment.',onRow:'showPMHistory'})}
   </div>
-
   ${pmHistory.length?`<div class="card"><h3 class="sec">PM completion history</h3>
     ${renderTable([
       {label:'Completed',render:l=>`<b>${fmtDate(l.doneDate)}</b>`},
@@ -1254,7 +1267,6 @@ function renderAssetDetail(id){
       {label:'Findings',hideSm:true,render:l=>l.notes
         ?esc(l.notes.length>44?l.notes.slice(0,44)+'…':l.notes):'<span style="color:var(--muted)">—</span>'}
     ],pmHistory)}</div>`:''}
-
   <div class="grid g2">
     <div class="card"><h3 class="sec">Recent repairs</h3>
       ${renderTable([
@@ -1269,7 +1281,6 @@ function renderAssetDetail(id){
         {label:'Assigned',render:r=>r.assignedTo?esc(r.assignedTo):'<span class="chip c-crit">Nobody</span>'}
       ],wos.filter(DB.isActive),{empty:'Nothing open.',onRow:'editWO'})}</div>
   </div>
-
   <div class="card"><h3 class="sec">Machine BOM${lowParts?` · ${lowParts} low`:''}</h3>
     ${renderTable([
       {label:'Part number',render:r=>`<b class="mono">${esc(r.id)}</b>`},
@@ -1296,12 +1307,7 @@ function renderQR(){
     <div class="note bad">This page is open as a local file, so there is no web address to encode.</div>`;
   if(!test.ok)return `<h1 class="page">QR Tags</h1>
     <div class="note bad"><b>The QR engine is not running — ${esc(test.msg)}.</b><br><br>
-    Almost always this means <span class="mono">assets/qr.js</span> is missing from the deployed site.
-    Open <span class="mono">${esc(base)}assets/qr.js</span> in a new tab:
-    <ul style="margin:8px 0 0 18px;line-height:1.9">
-      <li>A <b>404</b> means the file never made it into the repo — upload it and commit.</li>
-      <li>Code showing means it loaded but errored — hard-refresh with <b>Ctrl+Shift+R</b>.</li>
-    </ul></div>`;
+    Almost always this means <span class="mono">assets/qr.js</span> is missing from the deployed site.</div>`;
   if(!assets.length)return `<h1 class="page">QR Tags</h1><p class="sub">No equipment to tag yet.</p>
     <div class="placeholder">Add equipment first.</div>`;
   const site=DB.raw().meta.site||'';
@@ -1365,14 +1371,14 @@ function editAsset(id){
       </div>
       ${F.person('owner','Responsible person',a.owner,{emptyLabel:'— nobody assigned —'})}
       ${F.num('hourlyCost','Downtime cost per hour',a.hourlyCost,{step:'1',placeholder:'e.g. 500',
-        hint:'Optional. Set this and every downtime record on this machine gets a dollar figure — the number that gets attention upstairs. Leave blank rather than guessing.'})}
+        hint:'Optional. Set this and every downtime record on this machine gets a dollar figure. Leave blank rather than guessing.'})}
       <h3 class="sec" style="margin-top:24px">Documentation</h3>
       ${F.text('manualUrl','Machine manual link',a.manualUrl,{placeholder:'https://iacgroup.sharepoint.com/...',hint:LINK_HINT})}
       ${F.text('drawingUrl','Drawings / schematics link',a.drawingUrl,{placeholder:'https://iacgroup.sharepoint.com/...'})}
       ${F.area('notes','Notes',a.notes)}
       ${!isNew&&a.updatedBy?`<div class="note">Last changed by <b>${esc(a.updatedBy)}</b></div>`:''}`,
     footer:`<button class="btn filled" onclick="saveAsset(${isNew})">Save equipment</button>
-      ${!isNew?`<button class="btn out" onclick="showQR('${jsq(a.id)}')">QR tag</button>`:''}
+      ${!isNew&&canView('qr')?`<button class="btn out" onclick="showQR('${jsq(a.id)}')">QR tag</button>`:''}
       <button class="btn out" onclick="Modal.close()">Cancel</button>
       ${!isNew&&DB.can('delete')?`<button class="btn bad" style="margin-left:auto" onclick="delAsset('${jsq(a.id)}')">Delete</button>`:''}`});}
 
@@ -1415,7 +1421,7 @@ function editPM(id,presetAsset){
       ${F.text('procedureUrl','Procedure / checklist link',p.procedureUrl,
         {placeholder:'https://iacgroup.sharepoint.com/...',hint:LINK_HINT})}
       ${!isNew?`<div class="note">${logs.length?`<b>${logs.length} completion${logs.length===1?'':'s'} on record.</b>
-        Changing the frequency does not alter past records — they keep the schedule that applied at the time.`
+        Changing the frequency does not alter past records.`
         :'No completions recorded yet.'}</div>`:''}`,
     footer:`<button class="btn filled" onclick="savePM(${isNew})">Save PM</button>
       ${!isNew?`<button class="btn out" onclick="Modal.close();showPMHistory('${jsq(p.id)}')">History</button>`:''}
@@ -1432,7 +1438,7 @@ function savePM(isNew){
 
 function delPM(id){
   const logs=Compliance.logsFor(id).length;
-  confirmDelete(`Delete PM ${id}?\n\n${logs?logs+' completion record(s) stay in the compliance history — deleting the schedule does not erase proof the work was done.':'No completion history.'}`,()=>{
+  confirmDelete(`Delete PM ${id}?\n\n${logs?logs+' completion record(s) stay in the compliance history.':'No completion history.'}`,()=>{
     DB.remove('pms',id);Modal.close();route();toast('PM deleted');});}
 
 function genWO(pmId){
@@ -1571,8 +1577,7 @@ function renderCompliance(){
       {label:'',render:r=>`<button class="btn ok sm" onclick="event.stopPropagation();completePM('${jsq(r.id)}')">Record done</button>`}
     ],s.overdueList,{onRow:'showPMHistory'})}</div>`:''}
   ${never.length?`<div class="card"><h3 class="sec">Never completed — ${never.length} schedule${never.length===1?'':'s'}</h3>
-    <div class="note bad">These PMs have no completion on record at all. If the work has been
-    happening, it is not being logged — which for an audit is the same as not happening.</div>
+    <div class="note bad">These PMs have no completion on record at all.</div>
     ${renderTable([
       {label:'PM',render:r=>`<b class="mono">${esc(r.id)}</b>`},
       {label:'Task',render:r=>`<b>${esc(r.description||'—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>`},
@@ -1602,8 +1607,7 @@ function renderCompliance(){
       {label:'Late',num:true,render:r=>r.late?`<b style="color:var(--bad)">${r.late}</b>`:'0'},
       {label:'On-time rate',render:r=>`<span style="color:${pctColor(r.pct)};font-weight:600">${r.pct}%</span>`}
     ],people)}
-    <div class="note">Late is usually a scheduling or workload problem rather than a person problem —
-    a technician cannot do a PM on a machine that is running production.</div>
+    <div class="note">Late is usually a scheduling or workload problem rather than a person problem.</div>
   </div>`:''}`;}
 
 function exportCompliance(){
@@ -1645,7 +1649,6 @@ function renderWOCalendar(){
     DB.all('pmlogs').forEach(l=>{
       push(l.doneDate,`<div class="ev ev-pmdone" title="${esc(l.pmId+' completed by '+(l.by||''))}"
         onclick="showPMHistory('${jsq(l.pmId)}')">&#10003; ${esc(l.pmId)}</div>`);});}
-  /* Downtime on the calendar makes the bad weeks obvious at a glance. */
   DB.all('stops').forEach(s=>{
     const day=String(s.startedAt||'').slice(0,10);
     if(!day)return;
@@ -1748,8 +1751,7 @@ function closeWO(id){
   if(!d.assignedTo)d.assignedTo=DB.getWho();
   d.completedBy=DB.getWho();
   DB.upsert('wos',d);
-  /* A work order generated from a PM is how that PM gets done. Closing
-     it must leave the same evidence as marking the PM complete. */
+  /* A work order generated from a PM is how that PM gets done. */
   const w=DB.get('wos',id);
   if(w&&w.pmId){
     const p=DB.get('pms',w.pmId);
@@ -1785,7 +1787,7 @@ function renderParts(){
     <div class="stat"><div class="n">${value?'$'+value.toLocaleString(undefined,{maximumFractionDigits:0}):'—'}</div><div class="l">Inventory value</div></div>
   </div>
   <div class="chipset">
-    <button class="btn filled" onclick="editPart()">&#43; New part</button>
+    ${DB.can('createPart')?'<button class="btn filled" onclick="editPart()">&#43; New part</button>':''}
     <button class="btn out" onclick="exportCSV('parts')">Export CSV</button>
   </div>
   <div class="card" style="padding:6px 20px 20px">
@@ -1799,7 +1801,8 @@ function renderParts(){
       {label:'On hand',num:true,render:r=>r.qty??'—'},
       {label:'Min',num:true,hideSm:true,render:r=>r.min??'—'},
       {label:'Status',render:r=>{const s=DB.partStatus(r);return `<span class="chip ${s.cls}">${s.label}</span>`;}},
-      {label:'',render:r=>`<button class="btn tonal sm" onclick="event.stopPropagation();countPart('${jsq(r.id)}')">Count</button>`}
+      {label:'',render:r=>DB.can('countPart')
+        ?`<button class="btn tonal sm" onclick="event.stopPropagation();countPart('${jsq(r.id)}')">Count</button>`:''}
     ],rows,{empty:'No parts yet.',onRow:'editPart'})}
   </div>`;}
 
@@ -1858,11 +1861,8 @@ function renderImport(){
     <div class="chipset">${Object.keys(ENTITY_LABEL).map(e=>
       `<button class="fchip ${IMPORT.entity===e?'on':''}" onclick="setImportEntity('${e}')">${ENTITY_LABEL[e]}</button>`).join('')}</div>
     <div class="note">Recognised fields for <b>${ENTITY_LABEL[IMPORT.entity]}</b>: <span class="mono">${fieldList(IMPORT.entity)}</span>.
-      ${IMPORT.entity==='pmlogs'?`<br><br><b>Importing past PM completions</b> gives you compliance
-      history for work done before this system existed.`:''}
-      ${IMPORT.entity==='stops'?`<br><br><b>Importing past downtime</b> from a line-side log book or
-      spreadsheet gives you a baseline on day one. Times can be
-      <span class="mono">YYYY-MM-DD HH:MM</span>. A row with no end time imports as still open.`:''}</div>
+      ${IMPORT.entity==='stops'?`<br><br>Times can be <span class="mono">YYYY-MM-DD HH:MM</span>.
+      A row with no end time imports as still open.`:''}</div>
   </div>
   <div class="card"><h3 class="sec">2 · Load the file</h3>
     <div class="drop" id="drop" ondragover="event.preventDefault();this.classList.add('over')"
@@ -1987,20 +1987,34 @@ function renderUsers(){
       {label:'',render:r=>`<button class="btn out sm" onclick="event.stopPropagation();openEditUser('${jsq(r.username)}')">Manage</button>`}
     ],USERS,{empty:'No accounts loaded yet.'})}
   </div>
-  <div class="card"><h3 class="sec">What each role can do</h3>
+  <div class="card"><h3 class="sec">What each role sees and can do</h3>
     <div class="tablewrap"><table>
-      <thead><tr><th>Action</th><th>Maintenance</th><th>Admin</th></tr></thead>
+      <thead><tr><th></th><th>Maintenance</th><th>Admin</th></tr></thead>
       <tbody>
-        <tr><td>View everything</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Raise work orders and PMs</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Log and close downtime / defects</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td colspan="3" style="background:var(--surf-1);font-weight:600;font-size:11px;
+          text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">Screens</td></tr>
+        <tr><td>Home</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Equipment</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Work (orders + PM)</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Problems (downtime)</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Spare Parts</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Smart Assist</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Settings <small style="color:var(--muted)">(password only)</small></td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Dashboard</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
+        <tr><td>PM Compliance</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
+        <tr><td>QR Tags</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
+        <tr><td>Import CSV · Users</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
+        <tr><td colspan="3" style="background:var(--surf-1);font-weight:600;font-size:11px;
+          text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">Actions</td></tr>
+        <tr><td>Raise and complete work orders</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Log and close downtime</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Record PM completions</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Add and edit equipment, PMs, parts</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td><b>Delete</b> anything</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
-        <tr><td><b>Import CSV</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
-        <tr><td><b>Manage users</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
       </tbody></table></div>
-    <div class="note">Nobody can edit a PM completion record once written — not even an admin.</div>
+    <div class="note">Maintenance still <b>reads</b> every record — a technician at a machine
+    needs its full history. What is hidden is the reporting and setup screens, and what is
+    blocked is deleting, importing and managing accounts.</div>
   </div>`;}
 
 function refreshUsers(){
@@ -2015,11 +2029,12 @@ function openAddUser(){
     body:`${F.text('name','Full name','',{required:true,placeholder:'e.g. John Davis'})}
       ${F.text('username','Username','',{required:true,placeholder:'e.g. jdavis',autocomplete:'off'})}
       ${F.select('role','Role','maintenance',[
-        {v:'maintenance',t:'Maintenance — everyday work'},
-        {v:'admin',t:'Admin — everything, including users'}])}
+        {v:'maintenance',t:'Maintenance — the five floor screens'},
+        {v:'admin',t:'Admin — everything, including reports and users'}])}
       ${F.text('password','Temporary password','',{required:true,type:'text',autocomplete:'off'})}
       <div id="userMsg"></div>
-      <div class="note">The full name is what appears on records, so use the name people go by.</div>`,
+      <div class="note"><b>Maintenance</b> sees Equipment, Work, Problems, Spare Parts and
+      Smart Assist. <b>Admin</b> also gets Dashboard, PM Compliance, QR Tags, Import and Users.</div>`,
     footer:`<button class="btn filled" onclick="doAddUser()">Create account</button>
       <button class="btn out" onclick="Modal.close()">Cancel</button>`});}
 
@@ -2044,11 +2059,11 @@ function openEditUser(username){
     body:`${F.text('name','Full name',u.full_name)}
       ${F.text('username','Username',u.username,{readonly:true})}
       ${F.select('role','Role',u.role,[
-        {v:'maintenance',t:'Maintenance — everyday work'},
-        {v:'admin',t:'Admin — everything, including users'}])}
+        {v:'maintenance',t:'Maintenance — the five floor screens'},
+        {v:'admin',t:'Admin — everything, including reports and users'}])}
+      <div class="note">Changing the role changes which screens they see next time they load the app.</div>
       ${isMe?'<div class="note">This is your own account. You cannot lock yourself out.</div>':''}
       ${openWos.length?`<div class="note"><b>${openWos.length} open work order${openWos.length===1?'':'s'}</b> assigned.</div>`:''}
-      <div class="note">Renaming does not change records already written under the old name.</div>
       <div id="userMsg"></div>
       <h3 class="sec" style="margin-top:22px">Reset password</h3>
       ${F.text('password','New temporary password','',{type:'text',autocomplete:'off',placeholder:'leave blank to keep current'})}`,
@@ -2081,20 +2096,18 @@ function setUserActive(username,active){
 
 /* ============================================================
    SETTINGS
+   ------------------------------------------------------------
+   Maintenance gets a cut-down version: their account, their
+   password, and whether they are online. Without this they could
+   never change the temporary password they were given, which is
+   worse than showing them a short page.
    ============================================================ */
 function renderSettings(){
   const db=DB.raw();
   const s=DB.status();
-  const counts={Equipment:db.assets.length,PMs:db.pms.length,Parts:db.parts.length,
-    'Work orders':db.wos.length,'PM completions':db.pmlogs.length,
-    'Downtime & defects':db.stops.length};
-  const total=Object.values(counts).reduce((a,b)=>a+b,0);
   const admin=DB.isAdmin();
-  const comp=Compliance.summary({days:90});
-  const noRate=db.assets.filter(a=>DB.num(a.hourlyCost)===null).length;
-  return `
-  <h1 class="page">Settings</h1>
-  <p class="sub">Signed in as <b>${esc(s.who)}</b> · ${esc(ROLE_LABEL[s.role]||s.role)}</p>
+
+  const account=`
   <div class="card"><h3 class="sec">Your account</h3>
     <div class="tablewrap"><table><tbody>
       <tr><td style="color:var(--muted)">Name</td><td><b>${esc(s.who)}</b></td></tr>
@@ -2103,34 +2116,57 @@ function renderSettings(){
     </tbody></table></div>
     <div class="actions">
       <button class="btn filled" onclick="openChangePassword(false)">Change my password</button>
-      <button class="btn out" onclick="signOut()">Sign out</button></div></div>
+      <button class="btn out" onclick="signOut()">Sign out</button></div></div>`;
+
+  const connection=`
   <div class="card"><h3 class="sec">Connection</h3>
     ${s.mode==='cloud'
-      ?`<div class="note"><b>Live — connected to the shared database.</b></div>`
+      ?`<div class="note"><b>Live — connected to the shared database.</b><br>
+         Everything you save is visible to everyone else within about 15 seconds.</div>`
       :`<div class="note bad"><b>Offline — working on this device only.</b><br>
          ${esc(s.error||'No connection.')}<br>
-         ${s.pending?`<b>${s.pending} change${s.pending===1?'':'s'} waiting to be sent.</b>`:''}</div>`}
+         ${s.pending?`<b>${s.pending} change${s.pending===1?'':'s'} waiting to be sent.</b><br>`:''}
+         Your work is saved here and sent automatically when the connection returns.</div>`}
     <div class="actions">
-      <button class="btn filled" onclick="reconnect()">${s.mode==='cloud'?'Refresh now':'Try to reconnect'}</button></div></div>
+      <button class="btn filled" onclick="reconnect()">${s.mode==='cloud'?'Refresh now':'Try to reconnect'}</button></div></div>`;
+
+  if(!admin){
+    return `
+    <h1 class="page">Settings</h1>
+    <p class="sub">Signed in as <b>${esc(s.who)}</b> · ${esc(ROLE_LABEL[s.role]||s.role)}</p>
+    ${account}
+    ${connection}`;}
+
+  const counts={Equipment:db.assets.length,PMs:db.pms.length,Parts:db.parts.length,
+    'Work orders':db.wos.length,'PM completions':db.pmlogs.length,
+    'Downtime & defects':db.stops.length};
+  const total=Object.values(counts).reduce((a,b)=>a+b,0);
+  const comp=Compliance.summary({days:90});
+  const noRate=db.assets.filter(a=>DB.num(a.hourlyCost)===null).length;
+  return `
+  <h1 class="page">Settings</h1>
+  <p class="sub">Signed in as <b>${esc(s.who)}</b> · ${esc(ROLE_LABEL[s.role]||s.role)}</p>
+  ${account}
+  ${connection}
   <div class="card"><h3 class="sec">Site</h3>
     <label for="siteName">Site name</label>
-    <input id="siteName" value="${esc(db.meta.site||'')}" ${admin?'onchange="saveSite(this.value)"':'readonly'}/></div>
+    <input id="siteName" value="${esc(db.meta.site||'')}" onchange="saveSite(this.value)"/></div>
   <div class="card"><h3 class="sec">Data in the database</h3>
     ${renderTable([{label:'Collection',key:'k'},{label:'Records',num:true,key:'v'}],
       Object.entries(counts).map(([k,v])=>({id:k,k,v})))}
     <div class="note">${total} record${total===1?'':'s'} total ·
       <a href="#/compliance">${comp.pct===null?'no':comp.pct+'%'} PM compliance over 90 days</a>.
-      ${noRate?`<br>${noRate} item${noRate===1?'':'s'} of equipment have no hourly downtime cost set,
-      so their stoppages show time lost but no dollar figure.`:''}</div></div>
-  ${admin?`<div class="card"><h3 class="sec">Backup and sample data</h3>
+      ${noRate?`<br>${noRate} item${noRate===1?'':'s'} of equipment have no hourly downtime cost set.`:''}</div></div>
+  <div class="card"><h3 class="sec">Backup and sample data</h3>
     <div class="actions">
       <button class="btn filled" onclick="Backup.export()">Download backup</button>
       <button class="btn out" onclick="exportCompliance()">Export PM compliance</button>
       <button class="btn out" onclick="exportStops()">Export downtime</button>
       <button class="btn out" onclick="migrateUp()" ${s.mode==='cloud'?'':'disabled'}>Upload this device's data</button>
-      <button class="btn out" onclick="seedSample()">Load sample data</button></div></div>`
-  :`<div class="card"><h3 class="sec">Backup</h3>
-    <div class="actions"><button class="btn filled" onclick="Backup.export()">Download backup</button></div></div>`}`;}
+      <button class="btn out" onclick="seedSample()">Load sample data</button></div>
+    <div class="note"><b>Upload this device's data</b> pushes anything saved only in this
+    browser into the shared database — the fix when one person can see records nobody else can.</div>
+  </div>`;}
 
 function saveSite(v){const db=DB.raw();db.meta.site=v;DB.save();toast('Site name saved');}
 
@@ -2148,7 +2184,7 @@ function migrateUp(){
   const db=DB.raw();
   const n=db.assets.length+db.pms.length+db.parts.length+db.wos.length+db.pmlogs.length+db.stops.length;
   if(!n){toast('Nothing on this device to upload');return;}
-  confirmDelete(`Upload ${n} records into the shared database?`,()=>{
+  confirmDelete(`Upload ${n} records into the shared database?\n\nRecords with the same ID are merged, not duplicated.`,()=>{
     toast('Uploading…');
     DB.seedServer().then(r=>{route();toast(`Uploaded ${r.count} records`);})
       .catch(e=>toast('Upload failed — '+e.message));});}
@@ -2227,7 +2263,7 @@ function seedSample(){
       type:'Improvement',priority:'High',requestedBy:me,
       dateRequested:back(2),dateDue:plus(3),status:'Open',cause:'To be determined'}]);
   route();
-  toast('Sample data loaded — including downtime with a repeating fault');}
+  toast('Sample data loaded');}
 
 /* ============================================================
    BOOT
@@ -2249,11 +2285,10 @@ function seedSample(){
       DB.refresh().then(()=>route()).catch(()=>{});}});
   window.addEventListener('online',()=>{
     if(DB.status().mode!=='cloud')reconnect();});
-  /* Open stoppages count up live. One minute is precise enough and
-     cheap — it only re-renders when something is actually open. */
+  /* Open stoppages count up live. */
   setInterval(()=>{
     if(document.hidden)return;
-    if(!Stops.open().length)return;
+    if(typeof Stops==='undefined'||!Stops.open().length)return;
     const h=(location.hash||'').replace('#/','').split('/')[0];
     if(['home','dashboard','stops','asset','assets'].includes(h))route();
   },60000);

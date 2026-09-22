@@ -3,8 +3,8 @@
    ------------------------------------------------------------
    NOTE ON NAMING: the user-facing word is "Equipment", but the
    stored collection is still "assets". Renaming the key would
-   orphan every record already in the database for no functional
-   gain, so the label changed and the storage did not.
+   orphan every record already in the database, so the label
+   changed and the storage did not.
    ============================================================ */
 const DB = (() => {
   const KEY='techx.cmms.v1', TOKEN_KEY='techx.token', USER_KEY='techx.user',

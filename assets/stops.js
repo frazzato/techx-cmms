@@ -1,22 +1,14 @@
 /* ============================================================
    stops.js — downtime and defect tracking
-   ------------------------------------------------------------
-   Downtime and defects are ONE record type, not two. Both answer
-   the same question: the machine was stopped, for how long, and
-   why. The only difference is the category of reason:
-     downtime — the machine itself failed
-     defect   — the process produced bad parts
+   Downtime and defects are ONE record type. Both answer the same
+   question: the machine was stopped, for how long, and why.
 
-   TIME HANDLING — read before changing anything.
-   Times are stored as plain local strings, "YYYY-MM-DDTHH:MM",
-   exactly as the clock on the wall reads. No UTC conversion.
-   One plant, one timezone, and every timezone bug in an app like
-   this comes from converting between local input and UTC storage.
+   TIME HANDLING: stored as plain local strings "YYYY-MM-DDTHH:MM",
+   exactly as the clock on the wall reads. No UTC conversion — one
+   plant, one timezone, and every timezone bug in an app like this
+   comes from converting between local input and UTC storage.
    ============================================================ */
 const Stops = (() => {
-  /* The words your technicians actually see. Edit here; nothing
-     else needs to change. A list nobody recognises gets ignored,
-     and then everything ends up as "Other". */
   const DOWNTIME_REASONS = [
     'Mechanical failure','Electrical fault','Hydraulic / pneumatic',
     'Control / PLC fault','Sensor / photo-eye','Jam or blockage',
@@ -29,7 +21,6 @@ const Stops = (() => {
   const KINDS = {
     downtime:{label:'Downtime',sub:'The machine stopped',reasons:DOWNTIME_REASONS,icon:'&#9888;'},
     defect:{label:'Defect',sub:'Bad parts produced',reasons:DEFECT_REASONS,icon:'&#128683;'}};
-
   /* Open records older than this are almost certainly forgotten
      rather than genuinely still running. Left uncounted they
      quietly destroy every total on the screen. */
@@ -51,10 +42,6 @@ const Stops = (() => {
     if(!m)return null;
     const d=new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5]);
     return isNaN(d)?null:d;}
-  const dayOf=local=>String(local||'').slice(0,10);
-
-  /* Minutes stopped. An open record counts up to now, so the number
-     on screen is live while the machine is still down. */
   function minutes(stop){
     const a=toDate(stop.startedAt);
     if(!a)return null;
@@ -75,7 +62,6 @@ const Stops = (() => {
     if(h<24)return m?h+'h '+m+'m':h+'h';
     const d=Math.floor(h/24),rh=h%24;
     return rh?d+'d '+rh+'h':d+'d';}
-
   /* Only computed when the equipment carries an hourly cost. A
      made-up rate is worse than no number. */
   function cost(stop){
@@ -85,7 +71,6 @@ const Stops = (() => {
     const m=minutes(stop);
     if(m===null)return null;
     return (m/60)*rate;}
-
   const all=()=>DB.all('stops');
   function open(){
     return all().filter(isOpen)
@@ -97,20 +82,16 @@ const Stops = (() => {
   function forAsset(assetId){
     return all().filter(s=>s.assetId===assetId)
       .sort((a,b)=>(b.startedAt||'').localeCompare(a.startedAt||''));}
-
   function summary(opts={}){
     const {days=30,assetId='',kind=''}=opts;
     /* Cut on the exact minute, not the calendar day — comparing only
-       dates made "last 1 day" reach back as far as 48 hours. Both
-       sides are "YYYY-MM-DDTHH:MM" so a string compare is already
-       chronological. */
+       dates made "last 1 day" reach back as far as 48 hours. */
     const cutLocal=minutesAgo(days*24*60);
     let rows=all().filter(s=>(s.startedAt||'')>=cutLocal);
     if(assetId)rows=rows.filter(s=>s.assetId===assetId);
     if(kind)rows=rows.filter(s=>s.kind===kind);
     /* Closed records only for totals. Open ones are still running and
-       stale ones are untrustworthy — both reported separately rather
-       than folded into a number people will quote. */
+       stale ones are untrustworthy — both reported separately. */
     const closed=rows.filter(s=>!isOpen(s));
     const openRows=rows.filter(isOpen);
     const stale=rows.filter(isStale);
@@ -128,10 +109,8 @@ const Stops = (() => {
       mins,downMins,defMins,hours:mins/60,
       cost:haveCost?money:null,defectQty:qty,documented,
       docPct:closed.length?Math.round((documented/closed.length)*100):0};}
-
-  /* Sorted by minutes, not by count. Twelve two-minute jams matter
-     less than one six-hour electrical fault, and ranking by count
-     would hide that. */
+  /* Sorted by minutes, not count. Twelve two-minute jams matter less
+     than one six-hour electrical fault. */
   function byReason(opts={}){
     const s=summary(opts);
     const map=new Map();
@@ -147,7 +126,6 @@ const Stops = (() => {
       running+=e.mins;
       e.cumPct=total?Math.round((running/total)*100):0;});
     return out;}
-
   function byAsset(opts={}){
     const s=summary(opts);
     const map=new Map();
@@ -160,7 +138,6 @@ const Stops = (() => {
       e.mins+=m;
       if(r.kind==='defect')e.defect+=m;else e.down+=m;});
     return Array.from(map.values()).sort((a,b)=>b.mins-a.mins);}
-
   function repeats(opts={}){
     const {days=365,minCount=3}=opts;
     const s=summary({days});
@@ -181,9 +158,6 @@ const Stops = (() => {
         count:g.stops.length,mins,cost:haveCost?money:null,
         stops:g.stops,last:g.stops[0].startedAt||''});});
     return out.sort((a,b)=>b.mins-a.mins);}
-
-  /* A closed stoppage with a real "what fixed it" is the thing worth
-     surfacing next time. Without it the record is just a number. */
   function lessons(opts={}){
     const {assetId='',kind='',reason='',limit=5}=opts;
     let rows=all().filter(s=>!isOpen(s)&&s.fixedBy&&s.fixedBy.trim().length>=5);
@@ -191,7 +165,6 @@ const Stops = (() => {
     if(kind)rows=rows.filter(s=>s.kind===kind);
     if(reason)rows=rows.filter(s=>s.reason===reason);
     return rows.sort((a,b)=>(b.startedAt||'').localeCompare(a.startedAt||'')).slice(0,limit);}
-
   function exportRows(opts={}){
     const s=summary(Object.assign({days:3650},opts));
     const v=x=>(x===null||x===undefined)?'':String(x);
@@ -207,11 +180,9 @@ const Stops = (() => {
           'Cost':c===null?'':c.toFixed(2),'Parts affected':v(r.qty),
           'What happened':v(r.detail),'What fixed it':v(r.fixedBy),
           'Reported by':v(r.by),'Closed by':v(r.closedBy),'Work order':v(r.woId)};});}
-
   const EXPORT_COLUMNS=['Record','Type','Equipment ID','Equipment','Reason','Started','Ended',
     'Still open','Minutes','Duration','Cost','Parts affected','What happened','What fixed it',
     'Reported by','Closed by','Work order'];
-
   return{DOWNTIME_REASONS,DEFECT_REASONS,KINDS,STALE_HOURS,
     nowLocal,minutesAgo,toDate,minutes,fmtMins,cost,
     isOpen,isStale,all,open,recent,forAsset,
