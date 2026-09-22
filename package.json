@@ -1,9 +1,9 @@
 {
   "name": "techx-cmms",
-  "version": "1.5.0",
+  "version": "1.7.0",
   "private": true,
   "type": "module",
-  "description": "Tech X — maintenance management: equipment, work orders, PM compliance, downtime/defect tracking, QR tags and Smart Assist.",
+  "description": "Tech X — maintenance management: equipment, work, downtime, PM compliance, QR tags, Smart Assist and role-based views.",
   "scripts": { "dev": "vercel dev" },
   "dependencies": { "@neondatabase/serverless": "^1.0.1" },
   "license": "MIT"

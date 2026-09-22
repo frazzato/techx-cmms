@@ -20,8 +20,9 @@
   <span id="connBadge" class="connchip" onclick="location.hash='#/settings'"></span>
 </div>
 <div class="shell">
-  <!-- The sidebar mirrors the home screen: the same two actions,
-       Work (orders + PM) and Problems (downtime + defects). -->
+  <!-- Every item carries data-s. updateChrome() shows or hides each
+       one using the same VIEWS list the router enforces, so the menu
+       and the gate can never drift apart. -->
   <nav class="rail" id="rail">
     <a class="nav" href="#/home" data-s="home"><span class="ico">&#127968;</span><span class="lbl">Home</span></a>
     <a class="nav" href="#/dashboard" data-s="dashboard"><span class="ico">&#128200;</span><span class="lbl">Dashboard</span></a>
@@ -35,8 +36,8 @@
     <a class="nav" href="#/smart" data-s="smart"><span class="ico">&#128161;</span><span class="lbl">Smart Assist</span></a>
     <a class="nav" href="#/qr" data-s="qr"><span class="ico">&#128241;</span><span class="lbl">QR Tags</span></a>
     <hr/>
-    <a class="nav adminonly" href="#/import" data-s="import"><span class="ico">&#11015;</span><span class="lbl">Import CSV</span></a>
-    <a class="nav adminonly" href="#/users" data-s="users"><span class="ico">&#128101;</span><span class="lbl">Users</span></a>
+    <a class="nav" href="#/import" data-s="import"><span class="ico">&#11015;</span><span class="lbl">Import CSV</span></a>
+    <a class="nav" href="#/users" data-s="users"><span class="ico">&#128101;</span><span class="lbl">Users</span></a>
     <a class="nav" href="#/settings" data-s="settings"><span class="ico">&#9881;</span><span class="lbl">Settings</span></a>
   </nav>
   <main class="content" id="view"></main>
