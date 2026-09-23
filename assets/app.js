@@ -62,7 +62,7 @@ function route(){
   document.querySelectorAll('.rail .nav').forEach(a=>
     a.classList.toggle('active',a.dataset.s===navFor));
   document.getElementById('view').innerHTML=fn(param);
-  updateChrome();if(typeof copilotPanelRefresh==='function')copilotPanelRefresh();window.scrollTo(0,0);}
+  updateChrome();if(typeof txRefresh==='function')txRefresh();window.scrollTo(0,0);}
 window.addEventListener('hashchange',route);
 
 document.getElementById('globalSearch').addEventListener('input',e=>{
@@ -2848,79 +2848,33 @@ function seedSample(){
 })();
 
 
-/* ============================================================
-   TECH X COPILOT — docked, screen-aware local assistant
-   No API required. Answers deterministic questions from CMMS data.
-   Microsoft 365 Copilot remains available for open-ended analysis.
-   ============================================================ */
-const TECHX_COPILOT_URL='https://m365.cloud.microsoft/chat';
-let COPILOT_DOCK_OPEN=false;
-function copilotRoute(){return (location.hash||'#/home').replace('#/','').split('/')[0];}
-function copilotScreenName(){return ({home:'Home',dashboard:'Dashboard',assets:'Equipment',asset:'Equipment detail',work:'Schedule Work',wo:'Work Orders',pm:'Preventive Maintenance',stops:'Production Loss',parts:'Spare Parts',compliance:'Compliance',smart:'Smart Assist',causes:'Cause Setup'}[copilotRoute()]||'Tech X');}
-function openM365Copilot(){window.open(TECHX_COPILOT_URL,'_blank','noopener,noreferrer');}
-function toggleCopilotPanel(force){
- const p=document.getElementById('copilotPanel'); if(!p)return;
- COPILOT_DOCK_OPEN=typeof force==='boolean'?force:!p.classList.contains('open');
- p.classList.toggle('open',COPILOT_DOCK_OPEN);p.setAttribute('aria-hidden',String(!COPILOT_DOCK_OPEN));
- document.body.classList.toggle('copilot-docked',COPILOT_DOCK_OPEN);
- if(COPILOT_DOCK_OPEN){copilotPanelRefresh();setTimeout(()=>document.getElementById('copilotPanelInput')?.focus(),100);}
-}
-function copilotFacts(){
- const assets=DB.all('assets'),wos=DB.all('wos'),parts=DB.all('parts');
- const s=Stops.summary({days:30}), byA=Stops.byAsset({days:30}), byR=Stops.byReason({days:30});
- const active=wos.filter(DB.isActive), low=parts.filter(x=>{const q=DB.num(x.qty),m=DB.num(x.minQty);return q!==null&&m!==null&&q<=m});
- const overdue=DB.all('pms').filter(p=>p.active!==false&&DB.daysUntil(p.nextDue)<0);
- return {assets,wos,parts,s,byA,byR,active,low,overdue};
-}
-function copilotContextText(){
- const f=copilotFacts(), top=f.byA[0], cause=f.byR[0];
- return `Tech X CMMS — current ${copilotScreenName()} screen\n30-day snapshot\nEquipment: ${f.assets.length}\nOpen work orders: ${f.active.length}\nOverdue PMs: ${f.overdue.length}\nProduction-loss events: ${f.s.count}\nDowntime: ${Stops.fmtMins(f.s.downMins)}\nDefect time: ${Stops.fmtMins(f.s.defMins)}\nParts lost: ${f.s.parts}\nLow-stock parts: ${f.low.length}\nHighest-loss equipment: ${top?DB.assetName(top.assetId)+' — '+Stops.fmtMins(top.mins):'None'}\nLeading cause: ${cause?cause.reason+' — '+Stops.fmtMins(cause.mins):'None'}`;
-}
-function copilotPanelPrompts(){
- const r=copilotRoute();
- if(r==='assets'||r==='asset')return ['Which equipment is worst?','Show equipment with open work orders','What should we inspect first?'];
- if(r==='stops'||r==='dashboard')return ['Rank downtime by equipment','What causes repeat most?','Summarize the last 30 days'];
- if(r==='work'||r==='wo'||r==='pm')return ['What work is open?','Which PMs are overdue?','What should maintenance do today?'];
- if(r==='parts')return ['Which parts are low stock?','What parts should we monitor?','Summarize parts risk'];
- return ['What should maintenance focus on today?','Which equipment is worst?','Summarize the last 30 days'];
-}
-function copilotPanelRefresh(){
- const scope=document.getElementById('copilotPanelScope'), prompts=document.getElementById('copilotPanelPrompts');
- if(scope)scope.innerHTML=`Using <b>${esc(copilotScreenName())}</b> + current CMMS data`;
- if(prompts)prompts.innerHTML=copilotPanelPrompts().map(q=>`<button onclick="copilotPanelAsk('${jsq(q)}')">${esc(q)}</button>`).join('');
- const box=document.getElementById('copilotPanelMessages');
- if(box&&!box.children.length)copilotPanelMsg('assistant',`I can analyze the ${copilotScreenName()} screen and the current Tech X records. Ask a question below.`);
-}
-function copilotPanelMsg(role,text){
- const box=document.getElementById('copilotPanelMessages');if(!box)return;
- const d=document.createElement('div');d.className='copilot-panel-msg '+role;
- d.innerHTML=`<b>${role==='user'?'You':'Tech X Copilot'}</b><div>${esc(text).replace(/\n/g,'<br>')}</div>`;
- box.appendChild(d);box.scrollTop=box.scrollHeight;
-}
-function copilotLocalAnswer(q){
- const f=copilotFacts(), s=q.toLowerCase(), top=f.byA[0], causes=f.byR.slice(0,3);
- if(/worst|highest|rank.*equipment|most downtime/.test(s)){
-  if(!f.byA.length)return 'No closed production-loss records were found in the last 30 days.';
-  return f.byA.slice(0,5).map((x,i)=>`${i+1}. ${DB.assetName(x.assetId)} — ${Stops.fmtMins(x.mins)}, ${x.parts||0} parts lost`).join('\n');
- }
- if(/cause|repeat|root/.test(s)){
-  if(!causes.length)return 'No recorded loss causes were found in the last 30 days.';
-  return 'Leading recorded causes:\n'+causes.map((x,i)=>`${i+1}. ${x.reason} — ${x.count} event(s), ${Stops.fmtMins(x.mins)}`).join('\n')+'\n\nUse the event history and technician notes before confirming root cause.';
- }
- if(/work order|work is open|maintenance do|priorit/.test(s)){
-  if(!f.active.length)return 'There are no active work orders.';
-  return `${f.active.length} active work order(s). Prioritize High priority first, then equipment with recent production loss.\n`+f.active.slice(0,5).map(w=>`• ${w.id}: ${w.title||w.problem||'Work order'} — ${w.priority||'No priority'} — ${DB.assetName(w.assetId)}`).join('\n');
- }
- if(/pm|overdue|preventive/.test(s))return f.overdue.length?`${f.overdue.length} PM(s) are overdue:\n`+f.overdue.slice(0,8).map(p=>`• ${p.title||p.task||p.id} — ${DB.assetName(p.assetId)} — due ${p.nextDue||'not set'}`).join('\n'):'No active PMs are overdue.';
- if(/part|stock|inventory/.test(s))return f.low.length?`${f.low.length} part(s) are at or below minimum:\n`+f.low.slice(0,8).map(p=>`• ${p.name||p.id}: ${p.qty||0} on hand, minimum ${p.minQty||0}`).join('\n'):'No parts are at or below their recorded minimum.';
- if(/summary|30 day|today|focus/.test(s))return copilotContextText()+(top?'\n\nRecommended first review: '+DB.assetName(top.assetId)+' because it has the highest recorded loss.':'');
- return `I can answer from Tech X records about equipment ranking, downtime causes, open work orders, overdue PMs, and low-stock parts. For a broader question, use “Open Microsoft 365 Copilot” and include the Tech X context.`;
-}
-function copilotPanelAsk(preset){
- const input=document.getElementById('copilotPanelInput'),q=(preset||input?.value||'').trim();if(!q)return;
- copilotPanelMsg('user',q);if(input)input.value='';
- setTimeout(()=>copilotPanelMsg('assistant',copilotLocalAnswer(q)),120);
-}
-async function copilotCopyContext(){
- try{await navigator.clipboard.writeText(copilotContextText());toast('Tech X context copied');}catch(e){toast('Could not copy context');}
-}
+/* Tech X Copilot v22 — local analysis, charts, actions, reports */
+const TX_COPILOT_URL='https://m365.cloud.microsoft/chat';
+let TX_LAST_RECOMMENDATION=null;
+const txRoute=()=>((location.hash||'#/home').replace('#/','').split('/')[0]);
+const txScreen=()=>({home:'Home',dashboard:'Dashboard',assets:'Equipment',asset:'Equipment detail',work:'Schedule Work',wo:'Work Orders',pm:'Preventive Maintenance',stops:'Production Loss',parts:'Spare Parts',compliance:'Compliance'}[txRoute()]||'Tech X');
+function txOpenM365(){window.open(TX_COPILOT_URL,'_blank','noopener,noreferrer');}
+function txToggleCopilot(force){const p=document.getElementById('txCopilot');if(!p)return;const on=typeof force==='boolean'?force:!p.classList.contains('open');p.classList.toggle('open',on);p.setAttribute('aria-hidden',String(!on));document.body.classList.toggle('tx-docked',on);if(on){txRefresh();setTimeout(()=>document.getElementById('txInput')?.focus(),80)}}
+function txFacts(){const assets=DB.all('assets'),wos=DB.all('wos'),parts=DB.all('parts'),pms=DB.all('pms');const s=Stops.summary({days:30}),byA=Stops.byAsset({days:30}),byR=Stops.byReason({days:30});const active=wos.filter(DB.isActive);const overdue=pms.filter(p=>p.active!==false&&DB.daysUntil(p.nextDue)<0);const low=parts.filter(p=>{const q=DB.num(p.qty),m=DB.num(p.minQty);return q!==null&&m!==null&&q<=m});return{assets,wos,parts,pms,s,byA,byR,active,overdue,low};}
+function txPrompts(){const r=txRoute();if(r==='assets'||r==='asset')return['Analyze this equipment','Which equipment is worst?','Create work order from recommendation'];if(r==='stops'||r==='dashboard')return['Explain this downtime trend','Rank equipment by downtime','What causes repeat most?'];if(['work','wo','pm'].includes(r))return['What work should we prioritize?','Which PMs are overdue?','Generate weekly maintenance report'];if(r==='parts')return['Which parts are at risk?','What parts should we monitor?','Generate weekly maintenance report'];return['What should maintenance focus on today?','Explain this downtime trend','Generate weekly maintenance report'];}
+function txRefresh(){const sc=document.getElementById('txScope'),pr=document.getElementById('txPrompts'),msg=document.getElementById('txMessages');if(sc)sc.textContent='Using '+txScreen()+' + current CMMS data';if(pr)pr.innerHTML=txPrompts().map(q=>`<button onclick="txAsk('${jsq(q)}')">${esc(q)}</button>`).join('');if(msg&&!msg.children.length)txMsg('assistant','I can analyze this screen, explain trends, create a work order from a recommendation, or generate a weekly report.');}
+function txMsg(role,text,extra=''){const box=document.getElementById('txMessages');if(!box)return;const d=document.createElement('div');d.className='tx-msg '+role;d.innerHTML=`<b>${role==='user'?'You':'Tech X Copilot'}</b><div>${esc(text).replace(/\n/g,'<br>')}</div>${extra}`;box.appendChild(d);box.scrollTop=box.scrollHeight;}
+function txChart(rows,title){if(!rows.length)return '';return `<div class="tx-chart"><strong>${esc(title)}</strong>${Charts.bars(rows,{limit:5,labelWidth:115,barH:18})}</div>`;}
+function txCurrentAsset(){const bits=(location.hash||'').replace('#/','').split('/');return bits[0]==='asset'&&bits[1]?decodeURIComponent(bits[1]):'';}
+function txAnalyze(q){const f=txFacts(),s=q.toLowerCase(),assetId=txCurrentAsset(),asset=assetId?DB.get('assets',assetId):null;
+ if(/analyze this equipment/.test(s)){if(!asset)return {text:'Open an equipment detail page first, then ask again.'};const rows=Stops.forAsset(assetId).filter(x=>!Stops.isOpen(x)).slice(0,10);const mins=rows.reduce((n,x)=>n+(Stops.minutes(x)||0),0),open=f.active.filter(w=>w.assetId===assetId);TX_LAST_RECOMMENDATION={assetId,title:'Investigate recurring loss on '+asset.name,description:`Review ${rows.length} recent production-loss events (${Stops.fmtMins(mins)}) and complete corrective action.`,priority:mins>=120?'High':'Medium'};return{text:`${asset.name}\nRecent closed loss events: ${rows.length}\nRecorded time lost: ${Stops.fmtMins(mins)}\nOpen work orders: ${open.length}\nRecommendation: inspect the leading failure mode and verify PM coverage.`,actions:true};}
+ if(/trend|downtime|rank|worst/.test(s)){const rows=f.byA.slice(0,5);if(!rows.length)return{text:'No closed production-loss records were found in the last 30 days.'};TX_LAST_RECOMMENDATION={assetId:rows[0].assetId,title:'Reduce downtime on '+DB.assetName(rows[0].assetId),description:`Investigate ${Stops.fmtMins(rows[0].mins)} of recorded loss in the last 30 days. Review leading causes and implement corrective action.`,priority:'High'};return{text:`The largest 30-day contributor is ${DB.assetName(rows[0].assetId)} at ${Stops.fmtMins(rows[0].mins)}. ${f.byR[0]?'The leading recorded cause is '+f.byR[0].reason+'.':''}`,chart:txChart(rows.map(x=>({label:DB.assetName(x.assetId),value:x.mins,display:Stops.fmtMins(x.mins),color:Charts.C.down})),'30-day downtime ranking'),actions:true};}
+ if(/cause|repeat|root/.test(s)){const r=f.byR.slice(0,5);return{text:r.length?r.map((x,i)=>`${i+1}. ${x.reason} — ${x.count} event(s), ${Stops.fmtMins(x.mins)}`).join('\n'):'No recorded causes in the last 30 days.',chart:txChart(r.map(x=>({label:x.reason,value:x.mins,display:Stops.fmtMins(x.mins)})),'Leading causes')};}
+ if(/create work order/.test(s)){return{text:TX_LAST_RECOMMENDATION?'A recommendation is ready. Use the button below to create and review the work order.':'Ask me to analyze equipment or downtime first.',actions:!!TX_LAST_RECOMMENDATION};}
+ if(/weekly|report/.test(s))return{text:txWeeklyText(),report:true};
+ if(/work|priorit/.test(s))return{text:f.active.length?`${f.active.length} active work order(s):\n`+f.active.slice(0,6).map(w=>`• ${w.id} — ${w.priority||'No priority'} — ${DB.assetName(w.assetId)} — ${w.description||w.title||'Work'}`).join('\n'):'No active work orders.'};
+ if(/pm|overdue/.test(s))return{text:f.overdue.length?`${f.overdue.length} overdue PM(s):\n`+f.overdue.slice(0,8).map(p=>`• ${p.title||p.task||p.id} — ${DB.assetName(p.assetId)} — ${p.nextDue||'date not set'}`).join('\n'):'No active PMs are overdue.'};
+ if(/part|stock/.test(s))return{text:f.low.length?`${f.low.length} part(s) at or below minimum:\n`+f.low.slice(0,8).map(p=>`• ${p.name||p.id}: ${p.qty||0} on hand / minimum ${p.minQty||0}`).join('\n'):'No parts are at or below their recorded minimum.'};
+ return{text:`30-day maintenance briefing\nEquipment: ${f.assets.length}\nOpen work orders: ${f.active.length}\nOverdue PMs: ${f.overdue.length}\nProduction-loss events: ${f.s.count}\nDowntime: ${Stops.fmtMins(f.s.downMins)}\nParts lost: ${f.s.parts}\nLow-stock parts: ${f.low.length}`};}
+function txActions(r){let h='<div class="tx-actions">';if(r.actions)h+='<button onclick="txCreateWO()">Create work order</button>';if(r.report)h+='<button onclick="txDownloadReport()">Download weekly report</button>';h+='<button onclick="txCopyLast()">Copy</button><button onclick="txOpenM365()">Open M365 Copilot</button></div>';return h;}
+let TX_LAST_TEXT='';
+function txAsk(preset){const input=document.getElementById('txInput'),q=(preset||input?.value||'').trim();if(!q)return;txMsg('user',q);if(input)input.value='';const r=txAnalyze(q);TX_LAST_TEXT=r.text;setTimeout(()=>txMsg('assistant',r.text,(r.chart||'')+txActions(r)),100);}
+function txCreateWO(){const r=TX_LAST_RECOMMENDATION;if(!r){toast('Analyze equipment or downtime first');return;}const wo={id:DB.nextId('wos','WO-',4),assetId:r.assetId,description:r.description,type:'Improvement',priority:r.priority,requestedBy:DB.getWho(),dateRequested:today(),status:'Open',source:'Tech X Copilot'};DB.upsert('wos',wo);toast('Work order '+wo.id+' created');TX_LAST_RECOMMENDATION=null;setTimeout(()=>{location.hash='#/work'},350);}
+function txWeeklyText(){const f=txFacts();return `Tech X Weekly Maintenance Report\nGenerated: ${new Date().toLocaleString()}\n\nEquipment: ${f.assets.length}\nOpen work orders: ${f.active.length}\nOverdue PMs: ${f.overdue.length}\nProduction-loss events (30d): ${f.s.count}\nDowntime (30d): ${Stops.fmtMins(f.s.downMins)}\nDefect time (30d): ${Stops.fmtMins(f.s.defMins)}\nParts lost (30d): ${f.s.parts}\nLow-stock parts: ${f.low.length}\n\nTop equipment:\n${f.byA.slice(0,5).map((x,i)=>`${i+1}. ${DB.assetName(x.assetId)} — ${Stops.fmtMins(x.mins)}`).join('\n')||'None'}\n\nLeading causes:\n${f.byR.slice(0,5).map((x,i)=>`${i+1}. ${x.reason} — ${x.count} events`).join('\n')||'None'}\n\nRecommendations:\n1. Review the highest-loss equipment.\n2. Assign corrective actions for repeat causes.\n3. Close overdue PM and stock risks.`;}
+function txDownloadReport(){const text=txWeeklyText(),blob=new Blob([text],{type:'text/plain;charset=utf-8'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='techx-weekly-maintenance-'+today()+'.txt';a.click();URL.revokeObjectURL(a.href);toast('Weekly report downloaded');}
+async function txCopyLast(){if(!TX_LAST_TEXT)return;try{await navigator.clipboard.writeText(TX_LAST_TEXT);toast('Copilot response copied');}catch(e){toast('Could not copy');}}
