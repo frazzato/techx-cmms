@@ -20,22 +20,24 @@
   <span id="connBadge" class="connchip" onclick="location.hash='#/settings'"></span>
 </div>
 <div class="shell">
-  <!-- Every item carries data-s. updateChrome() shows or hides each
-       one using the same VIEWS list the router enforces, so the menu
-       and the gate can never drift apart. -->
+  <!-- The sidebar mirrors the home screen: the same two actions,
+       Schedule Work and Production Loss. Every item carries data-s
+       so updateChrome() can show or hide it using the same VIEWS
+       list the router enforces. -->
   <nav class="rail" id="rail">
     <a class="nav" href="#/home" data-s="home"><span class="ico">&#127968;</span><span class="lbl">Home</span></a>
     <a class="nav" href="#/dashboard" data-s="dashboard"><span class="ico">&#128200;</span><span class="lbl">Dashboard</span></a>
     <a class="nav" href="#/assets" data-s="assets"><span class="ico">&#128451;</span><span class="lbl">Equipment</span></a>
     <hr/>
-    <a class="nav accent-work" href="#/wo" data-s="work"><span class="ico">&#128736;</span><span class="lbl">Work</span></a>
-    <a class="nav accent-stop" href="#/stops" data-s="stops"><span class="ico">&#9888;</span><span class="lbl">Problems</span><span class="navdot" id="navStopDot"></span></a>
+    <a class="nav accent-work" href="#/wo" data-s="work"><span class="ico">&#128736;</span><span class="lbl">Schedule Work</span></a>
+    <a class="nav accent-stop" href="#/stops" data-s="stops"><span class="ico">&#9888;</span><span class="lbl">Production Loss</span><span class="navdot" id="navStopDot"></span></a>
     <hr/>
     <a class="nav" href="#/compliance" data-s="compliance"><span class="ico">&#9989;</span><span class="lbl">Compliance</span></a>
     <a class="nav" href="#/parts" data-s="parts"><span class="ico">&#128230;</span><span class="lbl">Spare Parts</span></a>
     <a class="nav" href="#/smart" data-s="smart"><span class="ico">&#128161;</span><span class="lbl">Smart Assist</span></a>
     <a class="nav" href="#/qr" data-s="qr"><span class="ico">&#128241;</span><span class="lbl">QR Tags</span></a>
     <hr/>
+    <a class="nav" href="#/causes" data-s="causes"><span class="ico">&#128221;</span><span class="lbl">Cause Setup</span></a>
     <a class="nav" href="#/import" data-s="import"><span class="ico">&#11015;</span><span class="lbl">Import CSV</span></a>
     <a class="nav" href="#/users" data-s="users"><span class="ico">&#128101;</span><span class="lbl">Users</span></a>
     <a class="nav" href="#/settings" data-s="settings"><span class="ico">&#9881;</span><span class="lbl">Settings</span></a>
@@ -51,6 +53,7 @@
 <div class="toast" id="toast"></div>
 <script src="assets/qr.js"></script>
 <script src="assets/db.js"></script>
+<script src="assets/causes.js"></script>
 <script src="assets/stops.js"></script>
 <script src="assets/insights.js"></script>
 <script src="assets/compliance.js"></script>
