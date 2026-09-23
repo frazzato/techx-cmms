@@ -2848,85 +2848,35 @@ function seedSample(){
 })();
 
 
-/* ============================================================
-   TECH X COPILOT — guided prompt workspace
-   No AI API is called in this version. It prepares a maintenance
-   question plus a concise, aggregate CMMS snapshot, copies it, and
-   opens Microsoft Copilot. A future chat service can replace the
-   launcher without changing this page or its prompt catalogue.
-   ============================================================ */
-const COPILOT_PROMPTS = [
-  {icon:'&#127942;',title:'Worst Equipment',question:'Which piece of equipment has the highest downtime?',prompt:'Analyze the current production loss data and identify the equipment with the highest downtime. Include possible root causes and recommendations.'},
-  {icon:'&#9888;',title:'Repeat Failures',question:'Which failures are occurring repeatedly?',prompt:'Review production loss and maintenance events. Identify recurring failure reasons and equipment with repeated issues.'},
-  {icon:'&#128200;',title:'Downtime Ranking',question:'Rank equipment by total production loss.',prompt:'Rank all equipment by production loss and downtime. Identify the largest contributors and recommended actions.'},
-  {icon:'&#128295;',title:'Maintenance Priorities',question:'What equipment should maintenance focus on today?',prompt:'Based on current downtime, defects, and recent work orders, identify maintenance priorities for today.'},
-  {icon:'&#128203;',title:'Weekly Report',question:'Generate a weekly maintenance report.',prompt:'Generate a weekly maintenance report including downtime, defects, recurring issues, completed work orders, and recommendations.'},
-  {icon:'&#129504;',title:'Root Cause Analysis',question:'Identify common causes and recurring issues.',prompt:'Perform a root cause analysis using downtime and defect data. Identify recurring issues and improvement opportunities.'}
+/* Tech X Copilot — Microsoft 365 corporate endpoint */
+const TECHX_COPILOT_URL='https://m365.cloud.microsoft/chat';
+const COPILOT_PROMPTS=[
+ ['Worst Equipment','Which piece of equipment has the highest downtime?','Analyze the current production loss data and identify the equipment with the highest downtime. Include possible root causes and recommendations.'],
+ ['Repeat Failures','Which failures are occurring repeatedly?','Review production loss and maintenance events. Identify recurring failure reasons and equipment with repeated issues.'],
+ ['Downtime Ranking','Rank equipment by total production loss.','Rank all equipment by production loss and downtime. Identify the largest contributors and recommended actions.'],
+ ['Maintenance Priorities','What equipment should maintenance focus on today?','Based on current downtime, defects, and recent work orders, identify maintenance priorities for today.'],
+ ['Weekly Report','Generate a weekly maintenance report.','Generate a weekly maintenance report including downtime, defects, recurring issues, completed work orders, and recommendations.'],
+ ['Root Cause Analysis','Identify common causes and recurring issues.','Perform a root cause analysis using downtime and defect data. Identify recurring issues and improvement opportunities.']
 ];
-
+function copilotOpen(){window.open(TECHX_COPILOT_URL,'_blank','noopener,noreferrer');}
 function copilotSnapshot(){
-  const assets=DB.all('assets'), wos=DB.all('wos'), parts=DB.all('parts');
-  const stopSummary=Stops.summary({days:30});
-  const active=wos.filter(w=>DB.isActive(w));
-  const overdue=DB.all('pms').filter(p=>{const d=DB.daysUntil(p.nextDue);return d!==null&&d<0;});
-  const ranked=Stops.byAsset({days:30});
-  const causes=Stops.byReason({days:30});
-  const topAsset=ranked.length?DB.assetName(ranked[0].assetId)+' ('+Stops.fmtMins(ranked[0].mins)+')':'Not enough data';
-  const topCause=causes.length?(causes[0].reason+' ('+Stops.fmtMins(causes[0].mins)+')'):'Not enough data';
-  const low=parts.filter(p=>{const q=DB.num(p.qty),m=DB.num(p.min);return q!==null&&m!==null&&q<=m;}).length;
-  return [
-    'TECH X CMMS — MAINTENANCE SNAPSHOT (last 30 days)',
-    'Site: '+(DB.raw().meta.site||'Not recorded'),
-    'Equipment: '+assets.length,
-    'Open work orders: '+active.length,
-    'Overdue PMs: '+overdue.length,
-    'Production loss events: '+stopSummary.closedCount,
-    'Downtime: '+Stops.fmtMins(stopSummary.downMins),
-    'Defect time: '+Stops.fmtMins(stopSummary.defMins),
-    'Parts lost: '+stopSummary.parts,
-    'Parts at or below minimum: '+low,
-    'Highest-loss equipment: '+topAsset,
-    'Leading loss cause: '+topCause
-  ].join('\n');
+ const assets=DB.all('assets'),wos=DB.all('wos'),parts=DB.all('parts');
+ const s=Stops.summary({days:30}), ba=Stops.byAsset({days:30})[0], br=Stops.byReason({days:30})[0];
+ const open=wos.filter(DB.isActive).length;
+ const low=parts.filter(x=>{const q=DB.num(x.qty),m=DB.num(x.minQty);return q!==null&&m!==null&&q<=m}).length;
+ return `Tech X CMMS — 30-day maintenance snapshot\nEquipment: ${assets.length}\nOpen work orders: ${open}\nProduction-loss events: ${s.count}\nDowntime: ${Stops.fmtMins(s.downMins)}\nDefect time: ${Stops.fmtMins(s.defMins)}\nParts lost: ${s.parts}\nLow-stock parts: ${low}\nHighest-loss equipment: ${ba?DB.assetName(ba.assetId)+' ('+Stops.fmtMins(ba.mins)+')':'None'}\nLeading loss cause: ${br?br.reason+' ('+Stops.fmtMins(br.mins)+')':'None'}\n\n`;
 }
-
-function copilotPrompt(i){
-  const p=COPILOT_PROMPTS[i], input=document.getElementById('copilotInput');
-  if(!p||!input)return;
-  input.value=p.prompt; input.focus();
-  copilotMessage('user',p.question);
-  copilotMessage('assistant','Your investigation prompt is ready. Copy it with the current CMMS snapshot, then open Microsoft Copilot.');
+async function copilotCopy(text,context){
+ const value=(context?copilotSnapshot():'')+(text||'');
+ if(!value.trim()){toast('Type or choose a question first');return;}
+ try{await navigator.clipboard.writeText(value)}catch(e){const t=document.createElement('textarea');t.value=value;document.body.appendChild(t);t.select();document.execCommand('copy');t.remove();}
+ toast('Question copied to clipboard. Open Copilot and paste your question.');
 }
-function copilotMessage(role,text){
-  const box=document.getElementById('copilotMessages'); if(!box)return;
-  const row=document.createElement('div'); row.className='copilot-msg '+role;
-  const b=document.createElement('b'); b.textContent=role==='user'?'You':'Tech X Copilot';
-  const p=document.createElement('p'); p.textContent=text;
-  row.appendChild(b); row.appendChild(p); box.appendChild(row); box.scrollTop=box.scrollHeight;
-}
-function copilotPreview(){
-  const input=document.getElementById('copilotInput'),q=(input?input.value:'').trim();
-  if(!q){toast('Type or choose a maintenance question first');return;}
-  copilotMessage('user',q);
-  copilotMessage('assistant','Prompt prepared. This version does not generate an AI answer inside Tech X; Microsoft Copilot provides the response.');
-}
-async function copilotCopy(withSnapshot){
-  const input=document.getElementById('copilotInput'),q=(input?input.value:'').trim();
-  if(!q){toast('Type or choose a maintenance question first');return;}
-  const value=(withSnapshot?copilotSnapshot()+'\n\n':'')+q;
-  try{await navigator.clipboard.writeText(value);}
-  catch(e){const t=document.createElement('textarea');t.value=value;document.body.appendChild(t);t.select();document.execCommand('copy');t.remove();}
-  toast('Question copied to clipboard. Open Copilot and paste your question.');
-}
-function copilotOpen(){window.open('https://copilot.microsoft.com','_blank','noopener,noreferrer');}
-function renderCopilot(){
-  const examples=['Which machine has the highest downtime?','Which equipment has recurring failures?','What are the main causes of production loss?','What spare parts should be monitored?','Generate a maintenance improvement plan.','Which assets should be targeted for preventive maintenance?','What defect categories are increasing?','Create a monthly management summary.','Which work orders should be prioritized?','What equipment carries the highest operational risk?'];
-  return `<h1 class="page">&#128161; Tech X Copilot</h1>
-  <p class="sub">Maintenance intelligence workspace — ready for future AI integration.</p>
-  <section class="copilot-hero"><div><span class="copilot-kicker">MAINTENANCE INTELLIGENCE</span><h2>Investigate faster. Ask better questions.</h2><p>Analyze equipment performance, downtime, defects, production loss, work orders, spare parts, and maintenance trends. Use guided prompts to identify recurring failures, root causes, priorities, and improvement opportunities.</p></div><span class="chip">No API key required</span></section>
-  <div class="copilot-layout"><section class="card copilot-chat"><div class="copilot-chat-head"><div><b>Tech X Copilot Chat</b><small>Prompt preparation mode</small></div><span class="statusdot">● Ready</span></div><div id="copilotMessages" class="copilot-messages"><div class="copilot-msg assistant"><b>Tech X Copilot</b><p>Welcome. Choose a suggested question or type your own maintenance question. This version prepares the prompt; Microsoft Copilot provides the AI response.</p></div></div><div class="copilot-compose"><textarea id="copilotInput" rows="3" placeholder="Ask about downtime, failures, work orders, spare parts..."></textarea><div class="actions"><button class="btn out" onclick="copilotPreview()">Preview</button><button class="btn out" onclick="copilotCopy(false)">Copy question</button><button class="btn out" onclick="copilotCopy(true)">Copy + CMMS snapshot</button><button class="btn filled" onclick="copilotOpen()">Open Microsoft Copilot &#8599;</button></div></div></section>
-  <aside class="card copilot-guide"><h3>How it works</h3><ol><li>Choose or type a question.</li><li>Copy it with the current CMMS snapshot.</li><li>Open Microsoft Copilot.</li><li>Paste and review the response.</li><li>Validate findings before acting.</li></ol><div class="copilot-note"><b>Privacy</b><br>Follow company policy. Do not paste confidential employee, customer, or restricted production information into external services.</div></aside></div>
-  <div class="copilot-section-head"><h2>Suggested Questions</h2><p>Select a card to prepare a complete maintenance prompt.</p></div><div class="copilot-grid">${COPILOT_PROMPTS.map((p,i)=>`<button class="copilot-prompt" onclick="copilotPrompt(${i})"><span class="copilot-prompt-icon">${p.icon}</span><span><b>${esc(p.title)}</b><small>${esc(p.question)}</small></span><em>Use prompt &#8594;</em></button>`).join('')}</div>
-  <section class="copilot-open"><div><span>MICROSOFT COPILOT</span><h2>&#128640; Open Microsoft Copilot</h2><p>Launch Copilot in a new browser tab to begin analyzing maintenance information.</p></div><button onclick="copilotOpen()">Launch Copilot &#8599;</button></section>
-  <div class="grid g2 copilot-info"><section class="card"><h3>Example Maintenance Questions</h3><ul>${examples.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></section><section class="card"><h3>Current CMMS snapshot</h3><pre>${esc(copilotSnapshot())}</pre><div class="note">Aggregate operational data only. Review the snapshot before using it outside Tech X.</div></section></div>`;
-}
+function copilotSelect(i){const x=COPILOT_PROMPTS[i],el=document.getElementById('copilotInput');if(el){el.value=x[2];el.focus();}}
+function renderCopilot(){return `<h1 class="page">&#128161; Tech X Copilot</h1>
+<p class="sub">Maintenance intelligence workspace connected to your approved Microsoft 365 Copilot.</p>
+<section class="copilot-hero"><div><b>MAINTENANCE INTELLIGENCE</b><h2>Investigate faster. Ask better questions.</h2><p>Prepare questions about equipment, downtime, defects, production loss, work orders, spare parts, and maintenance trends.</p></div><span class="chip">Microsoft 365 approved link</span></section>
+<div class="copilot-layout"><section class="card copilot-chat"><h3>Tech X Copilot Chat</h3><div class="copilot-messages"><div class="copilot-msg"><b>Tech X Copilot</b><p>Choose a suggested investigation or type your own question. Copy it with the live CMMS snapshot, then open Microsoft 365 Copilot.</p></div></div><textarea id="copilotInput" rows="4" placeholder="Ask about downtime, failures, work orders, spare parts..."></textarea><div class="actions"><button class="btn out" onclick="copilotCopy(document.getElementById('copilotInput').value,false)">Copy question</button><button class="btn out" onclick="copilotCopy(document.getElementById('copilotInput').value,true)">Copy with CMMS snapshot</button><button class="btn filled" onclick="copilotOpen()">Open Microsoft 365 Copilot &#8599;</button></div></section>
+<aside class="card copilot-guide"><h3>How it works</h3><ol><li>Choose or type a question.</li><li>Copy it with the CMMS snapshot.</li><li>Open Microsoft 365 Copilot.</li><li>Paste and review the response.</li><li>Validate findings before acting.</li></ol><div class="note"><b>Privacy:</b> Follow company policy. Do not paste confidential or restricted information.</div></aside></div>
+<h2>Suggested Questions</h2><div class="copilot-grid">${COPILOT_PROMPTS.map((x,i)=>`<button class="copilot-prompt" onclick="copilotSelect(${i})"><b>${esc(x[0])}</b><span>${esc(x[1])}</span><em>Use prompt &#8594;</em></button>`).join('')}</div>
+<section class="copilot-open"><div><h2>&#128640; Open Microsoft 365 Copilot</h2><p>Launch the company-approved Microsoft 365 Copilot chat.</p></div><button onclick="copilotOpen()">Launch Copilot &#8599;</button></section>`;}
