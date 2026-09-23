@@ -1,7 +1,7 @@
 /* ============================================================
    insights.js — Smart Assist
-   Searches work orders AND stoppages. No language model: every
-   line shown is a real record you can open.
+   Searches work orders AND production loss records. No language
+   model: every line shown is a real record you can open.
    ============================================================ */
 const Insights = (() => {
   const STOP = new Set(['the','a','an','and','or','but','if','of','at','by','for','with','about',
@@ -59,9 +59,17 @@ const Insights = (() => {
   const DISTINCTIVE=1.5, MIN_CORPUS=4;
   function sameModelSet(assetId){
     const asset=DB.get('assets',assetId);
-    if(!asset||!asset.model)return new Set();
+    if(!asset)return new Set();
+    /* Same make and model is the strongest signal; same equipment
+       TYPE is a weaker but still useful one now that types exist. */
+    if(!asset.model)return new Set();
     return new Set(DB.all('assets').filter(a=>a.id!==assetId&&a.model&&a.model===asset.model&&
       a.manufacturer===asset.manufacturer).map(a=>a.id));}
+  function sameTypeSet(assetId){
+    const asset=DB.get('assets',assetId);
+    if(!asset||!asset.type)return new Set();
+    return new Set(DB.all('assets').filter(a=>a.id!==assetId&&
+      String(a.type||'')===String(asset.type)).map(a=>a.id));}
   function ageDaysOf(dateish){
     if(!dateish)return null;
     const d=new Date(String(dateish).slice(0,10)+'T00:00:00');
@@ -75,6 +83,7 @@ const Insights = (() => {
     const canDiscriminate=done.length>=MIN_CORPUS;
     const qSet=tokenSet(description);
     const sameModel=sameModelSet(assetId);
+    const sameType=sameTypeSet(assetId);
     const scored=done.map(w=>{
       const wSet=tokenSet(woText(w));
       const ov=qSet.size?weightedOverlap(qSet,wSet,idf):{ratio:0,best:0};
@@ -84,6 +93,7 @@ const Insights = (() => {
       if(ov.ratio>0.15&&distinct)reasons.push('similar wording');
       if(w.assetId&&w.assetId===assetId){score+=45;reasons.push('same machine');}
       else if(sameModel.has(w.assetId)){score+=22;reasons.push('same model');}
+      else if(sameType.has(w.assetId)){score+=12;reasons.push('same type');}
       if(cause&&cause!=='To be determined'&&w.cause===cause){score+=30;reasons.push('same cause');}
       const ageDays=ageDaysOf(w.dateCompleted||w.dateRequested);
       if(ageDays!==null){
@@ -98,7 +108,7 @@ const Insights = (() => {
       const causeMatch=cause&&cause!=='To be determined'&&s.wo.cause===cause;
       return wordMatch||causeMatch;
     }).sort((a,b)=>b.score-a.score).slice(0,limit);}
-  /* Only closed records with a real fix note. An open stoppage has no
+  /* Only closed records with a real fix note. An open loss has no
      lesson yet, and one closed blank teaches nobody anything. */
   function similarStops(opts={}){
     const {assetId='',description='',reason='',excludeId='',limit=5}=opts;
@@ -110,6 +120,7 @@ const Insights = (() => {
     const canDiscriminate=usable.length>=MIN_CORPUS;
     const qSet=tokenSet(description+' '+reason);
     const sameModel=sameModelSet(assetId);
+    const sameType=sameTypeSet(assetId);
     const scored=usable.map(s=>{
       const sSet=tokenSet(stopText(s));
       const ov=qSet.size?weightedOverlap(qSet,sSet,idf):{ratio:0,best:0};
@@ -119,6 +130,7 @@ const Insights = (() => {
       if(ov.ratio>0.15&&distinct)reasons.push('similar wording');
       if(s.assetId&&s.assetId===assetId){score+=45;reasons.push('same machine');}
       else if(sameModel.has(s.assetId)){score+=22;reasons.push('same model');}
+      else if(sameType.has(s.assetId)){score+=12;reasons.push('same type');}
       if(reason&&s.reason===reason){score+=35;reasons.push('same reason');}
       const ageDays=ageDaysOf(s.startedAt);
       if(ageDays!==null){
@@ -133,8 +145,6 @@ const Insights = (() => {
       const reasonMatch=reason&&s.stop.reason===reason;
       return wordMatch||reasonMatch;
     }).sort((a,b)=>b.score-a.score).slice(0,limit);}
-  /* One ranked list across both. A technician does not care whether
-     the answer came from a work order or a downtime record. */
   function findLessons(opts={}){
     const limit=opts.limit||8;
     const wos=similarRepairs(Object.assign({},opts,{limit}));

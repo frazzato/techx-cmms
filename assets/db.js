@@ -9,7 +9,8 @@
 const DB = (() => {
   const KEY='techx.cmms.v1', TOKEN_KEY='techx.token', USER_KEY='techx.user',
         QUEUE_KEY='techx.queue', PEOPLE_KEY='techx.people', API='/api/data';
-  const EMPTY={assets:[],pms:[],parts:[],wos:[],pmlogs:[],stops:[],
+  const LISTS=['assets','pms','parts','wos','pmlogs','stops','causes'];
+  const EMPTY={assets:[],pms:[],parts:[],wos:[],pmlogs:[],stops:[],causes:[],
     meta:{site:'IAC Cottondale, AL',recentAssets:[]}};
   let cache=null,mode='local',lastRev=null,queue=[],onChange=null,lastError='',me=null,people=[];
 
@@ -19,7 +20,7 @@ const DB = (() => {
       cache=Object.assign({},structuredClone(EMPTY),raw?JSON.parse(raw):{});
       if(!cache.meta)cache.meta=structuredClone(EMPTY.meta);
       if(!Array.isArray(cache.meta.recentAssets))cache.meta.recentAssets=[];
-      ['pmlogs','stops'].forEach(k=>{if(!Array.isArray(cache[k]))cache[k]=[];});
+      LISTS.forEach(k=>{if(!Array.isArray(cache[k]))cache[k]=[];});
     }catch(e){cache=structuredClone(EMPTY);}
     return cache;}
   function saveLocal(){try{localStorage.setItem(KEY,JSON.stringify(cache));}catch(e){}}
@@ -142,9 +143,9 @@ const DB = (() => {
 
   function applyServer(data){
     const localMeta=(cache&&cache.meta)||{};
-    cache={assets:data.assets||[],pms:data.pms||[],parts:data.parts||[],wos:data.wos||[],
-      pmlogs:data.pmlogs||[],stops:data.stops||[],
-      meta:Object.assign({},data.meta||{},{recentAssets:localMeta.recentAssets||[]})};
+    const next={meta:Object.assign({},data.meta||{},{recentAssets:localMeta.recentAssets||[]})};
+    LISTS.forEach(k=>{next[k]=data[k]||[];});
+    cache=next;
     lastRev=data.rev||lastRev;saveLocal();}
 
   async function refresh(){
@@ -207,7 +208,7 @@ const DB = (() => {
   function replaceAll(obj){
     cache=Object.assign(structuredClone(EMPTY),obj);
     if(!Array.isArray(cache.meta.recentAssets))cache.meta.recentAssets=[];
-    ['pmlogs','stops'].forEach(k=>{if(!Array.isArray(cache[k]))cache[k]=[];});
+    LISTS.forEach(k=>{if(!Array.isArray(cache[k]))cache[k]=[];});
     saveLocal();}
   function reset(){cache=structuredClone(EMPTY);saveLocal();}
   function raw(){return load();}
@@ -222,9 +223,9 @@ const DB = (() => {
     const db=load();
     const meta=Object.assign({},db.meta);
     delete meta.recentAssets;
-    const r=await api('POST',{op:'seed',
-      payload:{assets:db.assets,pms:db.pms,parts:db.parts,wos:db.wos,
-        pmlogs:db.pmlogs,stops:db.stops,meta}});
+    const payload={meta};
+    LISTS.forEach(k=>{payload[k]=db[k]||[];});
+    const r=await api('POST',{op:'seed',payload});
     await refresh();return r;}
 
   function touchAsset(id){
@@ -253,11 +254,39 @@ const DB = (() => {
     if(qty===null)return{label:'Not counted',cls:'c-prog'};
     if(min!==null&&qty<=min)return{label:'Low stock',cls:'c-crit'};
     return{label:'In stock',cls:'c-done'};}
+
+  /* ---------- parts fit more than one machine ----------
+     The same sonotrode can be on three weld cells. Older records
+     carry a single `assetId`; newer ones carry an `assetIds` array.
+     Everything reads through here so both shapes work and no
+     existing part has to be re-entered. */
+  function partAssets(p){
+    if(!p)return[];
+    const out=[];
+    const push=v=>{
+      const s=String(v||'').trim();
+      if(s&&!out.includes(s))out.push(s);};
+    if(Array.isArray(p.assetIds))p.assetIds.forEach(push);
+    else if(typeof p.assetIds==='string')String(p.assetIds).split(/[;,|]/).forEach(push);
+    push(p.assetId);
+    return out;}
+  const partFits=(p,assetId)=>!assetId?false:partAssets(p).includes(assetId);
+  const partsForAsset=assetId=>all('parts').filter(p=>partFits(p,assetId));
+  /* Written on save so anything still reading the old single field
+     keeps working — including CSV export and older cached clients. */
+  function partAssetFields(ids){
+    const clean=(ids||[]).map(x=>String(x||'').trim()).filter(Boolean)
+      .filter((v,i,a)=>a.indexOf(v)===i);
+    return{assetIds:clean,assetId:clean[0]||''};}
+
   const isOpen=w=>['Open','On Hold'].includes(w.status||'Open');
   const isActive=w=>!['Completed','Cancelled'].includes(w.status||'Open');
   const isDone=w=>(w.status||'')==='Completed';
   const woDate=w=>w.dateDue||w.dateCompleted||w.dateRequested||'';
-  const forAsset=(c,assetId)=>all(c).filter(r=>r.assetId===assetId);
+  /* Parts have their own lookup because they can sit on several
+     machines; everything else has exactly one. */
+  const forAsset=(c,assetId)=>c==='parts'?partsForAsset(assetId)
+    :all(c).filter(r=>r.assetId===assetId);
 
   function status(){
     const u=loadUser();
@@ -266,7 +295,8 @@ const DB = (() => {
 
   return{all,get,upsert,remove,bulkUpsert,replaceAll,reset,raw,save:saveMeta,saveLocal,
     nextId,bumpDue,daysUntil,assetName,partStatus,num,addDays,
-    touchAsset,forAsset,isOpen,isActive,isDone,woDate,FREQ_DAYS,
+    partAssets,partFits,partsForAsset,partAssetFields,
+    touchAsset,forAsset,isOpen,isActive,isDone,woDate,FREQ_DAYS,LISTS,
     connect,refresh,startPolling,stopPolling,seedServer,flushQueue,
     login,logout,changePassword,listUsers,addUser,updateUser,diagnose,
     fetchPeople,peopleNames,loadPeople,setPeople,

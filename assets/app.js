@@ -1,52 +1,38 @@
 /* ============================================================
    app.js — router + screens
 
+   WORDING
+   The plant calls these things:
+     Schedule work   — work orders and PMs
+     Production Loss — downtime and defects
+   Those are the words on every button and menu item. The stored
+   collections keep their old keys (wos, pms, stops) because
+   renaming them would orphan every record already saved.
+
    ROLE-BASED VIEWS
-   Maintenance sees the five screens a technician needs on the
-   floor. Admin sees everything. The list lives in VIEWS below —
-   that is the single place to change who sees what.
-
-   Two rules this follows:
-
-   1. The ROUTER enforces it, not the menu. Hiding a nav item is
-      cosmetic; anyone can type #/compliance. Every route is
-      checked on entry.
-
-   2. Restricting SCREENS is not the same as restricting DATA.
-      The API still returns the full register to any signed-in
-      user, because a technician standing at a machine needs its
-      history to do the job. What stays admin-only is writes that
-      are hard to undo: delete, import, and user management.
+   Maintenance sees the screens a technician needs on the floor;
+   admin sees everything. The router enforces it, not the menu —
+   hiding a nav item is cosmetic, anyone can type the address.
    ============================================================ */
 
 const FREQS = ['daily','weekly','biweekly','monthly','quarterly','semiannual','annually'];
 const WO_TYPES = ['Repair','Preventive','Improvement','Troubleshoot','Inspection'];
 const WO_STATUS = ['Open','In Progress','On Hold','Completed','Cancelled'];
 const PRIORITIES = ['High','Medium','Low'];
-const CAUSES = ['To be determined','Wear / end of life','Seal failure','Loose fastener',
-  'Contamination','Operator damage','Electrical fault','Software / program','Unknown'];
 const ROLE_LABEL = { admin:'Admin', maintenance:'Maintenance' };
 const LINK_HINT = 'Paste a SharePoint or web address. Opens in a new tab — the file stays where it lives.';
 
-/* ---------- who sees what ----------
-   Edit this and the menu, the router and the landing page all
-   follow. Nothing else needs changing. */
+/* ---------- who sees what ---------- */
 const VIEWS = {
   maintenance: [
-    'home',        /* the launcher — the two big buttons live here */
-    'assets',      /* Equipment */
-    'asset',       /* an individual machine, incl. QR scan target */
-    'work',        /* Work Orders + PM Plan */
-    'wo', 'pm',    /* the old routes, so existing links keep working */
-    'stops',       /* Problems */
-    'parts',       /* Spare Parts */
-    'smart',       /* Smart Assist */
-    'settings',    /* password + sign out only, see renderSettings */
-    'login'
+    'home',        /* the launcher */
+    'assets','asset',
+    'work','wo','pm',   /* Schedule work — old routes still resolve */
+    'stops',            /* Production Loss */
+    'parts','smart','settings','login'
   ],
   admin: 'all'
 };
-
 function canView(name){
   const role=DB.role();
   if(!role)return name==='login';
@@ -54,20 +40,18 @@ function canView(name){
   if(allowed==='all'||!allowed)return true;
   return allowed.includes(name);}
 
-/* Where a role lands, and where it gets sent when it asks for
-   something it cannot open. */
-const HOME_FOR = { maintenance:'home', admin:'home' };
-
 let SEARCH='', WO_VIEW='list', WO_FILTER='all', PM_FILTER='all';
 let CAL={y:new Date().getFullYear(),m:new Date().getMonth(),pms:true};
 let USERS=[], SMART_Q='', SMART_ASSET='', COMP_DAYS=90, COMP_ASSET='';
 let STOP_DAYS=30, STOP_KIND='', STOP_ASSET='';
 let WORK_TAB='wo';
+let CAUSE_KIND='downtime', CAUSE_TYPE='';
 
 const ROUTES={home:renderHome,dashboard:renderDashboard,assets:renderAssets,asset:renderAssetDetail,
   work:renderWork,pm:renderWork,wo:renderWork,
   parts:renderParts,qr:renderQR,smart:renderSmart,compliance:renderCompliance,
-  stops:renderStops,import:renderImport,users:renderUsers,settings:renderSettings,login:renderLogin};
+  stops:renderStops,causes:renderCauses,
+  import:renderImport,users:renderUsers,settings:renderSettings,login:renderLogin};
 
 function route(){
   const hash=(location.hash||'#/home').replace('#/','');
@@ -75,20 +59,13 @@ function route(){
   const name=parts[0];
   const param=parts[1]?decodeURIComponent(parts[1]):null;
   const st=DB.status();
-
-  /* #/wo and #/pm still work — old bookmarks and shared links keep
-     resolving, they just open the combined screen on the right tab. */
   if(name==='wo')WORK_TAB='wo';
   if(name==='pm')WORK_TAB='pm';
-
   if(!st.signedIn&&name!=='login'){
     document.getElementById('view').innerHTML=renderLogin();updateChrome();return;}
-
-  /* The router is the gate. A hidden menu item is not security —
-     this is what actually stops someone typing the address. */
+  /* The router is the gate. A hidden menu item is not security. */
   if(!canView(name)){
     document.getElementById('view').innerHTML=renderNoAccess(name);updateChrome();return;}
-
   const fn=ROUTES[name]||renderHome;
   const navFor=['work','wo','pm'].includes(name)?'work'
     :name==='asset'?'assets':name;
@@ -109,10 +86,9 @@ function matches(obj,fields){
   return fields.some(f=>String(obj[f]??'').toLowerCase().includes(SEARCH));}
 function openAsset(id){location.hash='#/asset/'+encodeURIComponent(id);}
 
-/* Honest about why, and gives a way back rather than a dead end. */
 function renderNoAccess(name){
   const label={users:'Users',import:'Import CSV',compliance:'PM Compliance',
-    dashboard:'Dashboard',qr:'QR Tags'}[name]||'That screen';
+    dashboard:'Dashboard',qr:'QR Tags',causes:'Cause Setup'}[name]||'That screen';
   return `<h1 class="page">Not available</h1>
     <p class="sub"><b>${esc(label)}</b> is not part of the maintenance view.</p>
     <div class="placeholder"><div style="font-size:30px">&#128274;</div>
@@ -123,8 +99,6 @@ function renderNoAccess(name){
     </div>`;}
 
 function updateChrome(){
-  /* Menu items follow the same list the router enforces, so the two
-     can never drift apart. */
   document.querySelectorAll('.rail .nav').forEach(el=>{
     const s=el.dataset.s;
     el.style.display=(!s||canView(s))?'':'none';});
@@ -174,7 +148,7 @@ function doLogin(){
   DB.login(u.trim(),p).then(user=>
     DB.connect().then(r=>{
       if(r.mode==='cloud')DB.startPolling(15);
-      location.hash='#/'+(HOME_FOR[user.role]||'home');route();
+      location.hash='#/home';route();
       toast('Signed in as '+user.name);
       if(user.mustChange)setTimeout(()=>openChangePassword(true),400);})
   ).catch(e=>{
@@ -199,14 +173,14 @@ function runDiagnostics(){
     else if(!d.hasAdminPassword&&d.userCount===0)advice=`<b>No accounts exist yet.</b> Add the three <span class="mono">ADMIN_*</span> variables, then <b>redeploy</b>.`;
     else if(d.userCount===0)advice=`<b>Configured, but no account was created.</b> Redeploy once more.`;
     else if(d.ok)advice=`<b>Everything is working.</b> ${d.userCount} account${d.userCount===1?'':'s'} exist.`;
-    /* Record counts answer "is the data actually on the server" from a
-       phone, without opening a SQL console. */
+    const NAME={assets:'equipment',wos:'work orders',pms:'PMs',parts:'parts',
+      stops:'production loss',pmlogs:'PM completions',causes:'cause lines'};
     let counts='';
     if(d.recordCounts){
       const keys=Object.keys(d.recordCounts);
       counts=keys.length
         ? `<div style="margin-top:10px"><b>Records in the shared database:</b><br>`+
-          keys.map(k=>`${k==='assets'?'equipment':k}: <b>${d.recordCounts[k]}</b>`).join(' · ')+`</div>`
+          keys.map(k=>`${NAME[k]||k}: <b>${d.recordCounts[k]}</b>`).join(' · ')+`</div>`
         : `<div style="margin-top:10px"><b>The database is empty.</b> Nothing has been saved to the server yet.</div>`;}
     msg.innerHTML=`<div class="note ${d.ok?'':'bad'}">
       ${row(d.hasDatabaseUrl,'DATABASE_URL is set')}
@@ -250,12 +224,15 @@ function doChangePassword(){
     .catch(e=>show(e.message||'Could not change password'));}
 
 /* ============================================================
-   THE TWO ENTRY POINTS — same wording as the home buttons
+   THE TWO ENTRY POINTS
+   ------------------------------------------------------------
+   "Schedule work" and "Production Loss" — the same pair of words
+   on the home buttons, the sidebar and these dialogs.
    ============================================================ */
 function openWorkChooser(presetAsset){
   const a=presetAsset?`'${jsq(presetAsset)}'`:'';
   Modal.open({
-    title:'What do you need to raise?',
+    title:'What do you need to schedule?',
     body:`<div class="chooser">
       <button class="choice" onclick="Modal.close();editWO(null,${a})">
         <div class="choice-ic ic-wo">&#129534;</div>
@@ -275,7 +252,7 @@ function openWorkChooser(presetAsset){
 function openStopChooser(presetAsset){
   const a=presetAsset?`'${jsq(presetAsset)}'`:'';
   Modal.open({
-    title:'What happened?',
+    title:'What was lost?',
     body:`<div class="chooser">
       <button class="choice" onclick="Modal.close();reportStop('downtime',${a})">
         <div class="choice-ic ic-down">&#9888;</div>
@@ -288,8 +265,8 @@ function openStopChooser(presetAsset){
           <span>The machine ran but produced bad parts</span></div>
       </button>
     </div>
-    <div class="note">Both record how long production was lost. The only
-    difference is whether the machine failed or the process did.</div>`,
+    <div class="note">Both record time lost. A defect also records how many
+    parts were scrapped — a short stoppage can still cost a full bin.</div>`,
     footer:`<button class="btn out" onclick="Modal.close()">Cancel</button>`});}
 
 function bigActions(presetAsset){
@@ -297,16 +274,21 @@ function bigActions(presetAsset){
   return `<div class="bigactions">
     <button class="bigaction" onclick="openWorkChooser(${a})">
       <div class="ba-ic">&#128736;</div>
-      <div class="ba-txt"><b>Raise work</b><span>Work order or PM</span></div>
+      <div class="ba-txt"><b>Schedule work</b><span>Work order or PM</span></div>
     </button>
     <button class="bigaction bad" onclick="openStopChooser(${a})">
       <div class="ba-ic">&#9888;</div>
-      <div class="ba-txt"><b>Report a problem</b><span>Downtime or defect</span></div>
+      <div class="ba-txt"><b>Production Loss</b><span>Downtime or defect</span></div>
     </button>
   </div>`;}
 
 /* ============================================================
-   WORK — Work Orders and PM under one nav item
+   SCHEDULE WORK — work orders and PM on one screen
+   ------------------------------------------------------------
+   No big buttons here. This screen IS the schedule-work screen,
+   so a second button saying the same thing is noise. Each tab
+   carries its own create button instead, which is one tap rather
+   than two.
    ============================================================ */
 function setWorkTab(tab){
   WORK_TAB=tab;
@@ -320,9 +302,8 @@ function renderWork(){
   const openN=wos.filter(DB.isOpen).length;
   const overdueN=pms.filter(p=>(DB.daysUntil(p.nextDue)??99)<0).length;
   return `
-  <h1 class="page">Work</h1>
+  <h1 class="page">Schedule Work</h1>
   <p class="sub">Work orders and preventive maintenance.</p>
-  ${bigActions()}
   <div class="worktabs">
     <button class="worktab ${WORK_TAB==='wo'?'on':''}" onclick="setWorkTab('wo')">
       <span class="wt-ic">&#129534;</span>
@@ -363,6 +344,7 @@ function renderWOBody(){
     <div class="stat click" onclick="setWOFilter('unassigned')"><div class="n" style="color:${unassignedN?'var(--bad)':'inherit'}">${unassignedN}</div><div class="l">Nobody assigned</div></div>
   </div>
   <div class="chipset">
+    <button class="btn filled" onclick="editWO()">&#43; New work order</button>
     <div class="vtog">
       <button class="${WO_VIEW==='list'?'on':''}" onclick="setWOView('list')">&#9776; List</button>
       <button class="${WO_VIEW==='calendar'?'on':''}" onclick="setWOView('calendar')">&#128197; Calendar</button>
@@ -405,11 +387,8 @@ function renderPMBody(){
   else if(PM_FILTER==='never')rows=rows.filter(r=>never.has(r.id));
   rows.sort((a,b)=>(a.nextDue||'9999').localeCompare(b.nextDue||'9999'));
   const overdue=all.filter(r=>(DB.daysUntil(r.nextDue)??99)<0).length;
-  const unassigned=all.filter(r=>!r.tech).length;
   const mine=all.filter(r=>(r.tech||'')===meName).length;
   const comp=Compliance.summary({days:90});
-  /* The compliance screen is admin-only, so only offer the link to
-     someone who can actually open it. */
   const showComp=canView('compliance');
   return `
   <div class="grid g4" style="margin-bottom:20px">
@@ -419,6 +398,7 @@ function renderPMBody(){
     <div class="stat click" onclick="setPMFilter('never')"><div class="n" style="color:${never.size?'var(--bad)':'var(--ok)'}">${never.size}</div><div class="l">Never completed</div></div>
   </div>
   <div class="chipset">
+    <button class="btn filled" onclick="editPM()">&#43; New PM</button>
     ${showComp?'<a class="btn tonal" href="#/compliance">&#9989; Compliance record</a>':''}
     <button class="fchip ${PM_FILTER==='all'?'on':''}" onclick="setPMFilter('all')">All</button>
     <button class="fchip ${PM_FILTER==='mine'?'on':''}" onclick="setPMFilter('mine')">Mine</button>
@@ -455,7 +435,7 @@ function renderPMBody(){
   </div>`;}
 
 /* ============================================================
-   DOWNTIME AND DEFECTS
+   PRODUCTION LOSS — reporting and closing
    ============================================================ */
 const STOP_QUICK = [
   { mins: 0,   label: 'Just now' },
@@ -473,6 +453,28 @@ function stopQuickTime(mins){
   if(btn)btn.classList.add('on');
   refreshStopLessons();}
 
+/* Reasons depend on which machine was picked, because they are
+   configured per equipment type. Changing the machine has to
+   rebuild the reason list or it would offer another type's. */
+function refreshStopReasons(kind){
+  const box=document.getElementById('reasonBox');
+  if(!box)return;
+  const d=F.read();
+  const label=kind==='defect'?'What kind of defect?':'Why did it stop?';
+  box.innerHTML=F.select('reason',label,d.reason||'',
+    Stops.reasonOptions(kind,d.assetId||'','',{placeholder:'— choose —'}),
+    {required:true,onchange:'refreshStopLessons()'});
+  const a=DB.get('assets',d.assetId||'');
+  const hint=document.getElementById('reasonHint');
+  if(hint){
+    if(!d.assetId)hint.innerHTML='';
+    else if(!a||!a.type)hint.innerHTML=
+      `<div class="hint">This equipment has no type set, so the standard list is showing.</div>`;
+    else if(typeof Causes!=='undefined'&&Causes.isFallback(kind==='defect'?'defect':'downtime',a.type))
+      hint.innerHTML=`<div class="hint">No list set up for <b>${esc(a.type)}</b> yet — showing the standard one.</div>`;
+    else hint.innerHTML=`<div class="hint">List for <b>${esc(a.type)}</b>.</div>`;}
+  refreshStopLessons();}
+
 function refreshStopLessons(){
   const box=document.getElementById('stopLessons');
   if(!box)return;
@@ -485,11 +487,12 @@ function refreshStopLessons(){
 
 function reportStop(kind,presetAsset){
   const k=Stops.KINDS[kind]||Stops.KINDS.downtime;
+  const isDefect=kind==='defect';
   Modal.open({
     title:k.label+' — what happened?',
     body:`
       ${F.select('assetId','Equipment',presetAsset||'',assetOptions(),
-        {required:true,onchange:'refreshStopLessons()'})}
+        {required:true,onchange:`refreshStopReasons('${jsq(kind)}')`})}
       <label class="req">When did it start?</label>
       <div class="quicktime">
         ${STOP_QUICK.map(q=>`<button type="button" id="qt${q.mins}"
@@ -497,12 +500,16 @@ function reportStop(kind,presetAsset){
       </div>
       ${F.datetime('startedAt','',Stops.nowLocal(),
         {hint:'Adjust if it actually started at another time.'})}
-      ${F.select('reason',k.label==='Defect'?'What kind of defect?':'Why did it stop?','',
-        [{v:'',t:'— choose —'}].concat(k.reasons.map(r=>({v:r,t:r}))),
-        {required:true,onchange:'refreshStopLessons()'})}
-      ${kind==='defect'?F.num('qty','How many parts affected','',{step:'1',placeholder:'e.g. 12'}):''}
+      <div id="reasonBox">${F.select('reason',
+        isDefect?'What kind of defect?':'Why did it stop?','',
+        Stops.reasonOptions(kind,presetAsset||'','',{placeholder:'— choose —'}),
+        {required:true,onchange:'refreshStopLessons()'})}</div>
+      <div id="reasonHint"></div>
+      ${F.num('qty',isDefect?'How many parts scrapped':'Parts lost (if any)','',
+        {step:'1',placeholder:'e.g. 12',
+         hint:isDefect?'Parts lost is counted alongside time lost in every report.':''})}
       ${F.area('detail','What happened',"",2,
-        {placeholder:kind==='defect'
+        {placeholder:isDefect
           ? 'e.g. Weld pull tests failing on station 2, parts going to scrap.'
           : 'e.g. Machine faulted and will not reset, drive shows an alarm.',
          oninput:'refreshStopLessons()'})}
@@ -513,7 +520,7 @@ function reportStop(kind,presetAsset){
       record what fixed it.</div>`,
     footer:`<button class="btn bad" onclick="saveStop('${jsq(kind)}')">${k.icon} Log ${k.label.toLowerCase()}</button>
       <button class="btn out" onclick="Modal.close()">Cancel</button>`});
-  setTimeout(refreshStopLessons,120);}
+  setTimeout(()=>refreshStopReasons(kind),120);}
 
 function saveStop(kind){
   const d=F.read();
@@ -524,6 +531,8 @@ function saveStop(kind){
      negative duration that quietly corrupts every total. */
   if(d.startedAt>Stops.nowLocal()){
     toast('That start time is in the future — check it');return;}
+  const qty=DB.num(d.qty);
+  if(d.qty&&(qty===null||qty<0)){toast('Parts lost must be a number');return;}
   const rec={
     id:DB.nextId('stops','EV-',5),
     kind:kind==='defect'?'defect':'downtime',
@@ -551,6 +560,8 @@ function closeStop(id){
       </div>
       ${s.detail?`<div class="note">${esc(s.detail)}</div>`:''}
       ${F.datetime('endedAt','When did it start running again?',Stops.nowLocal(),{required:true})}
+      ${F.num('qty','Parts lost',s.qty,{step:'1',
+        hint:'Update this if the final count is different from the first estimate.'})}
       ${F.area('fixedBy','What got it running?','',3,
         {required:true,
          placeholder:'e.g. Reset the drive and reseated the encoder plug. Ran fine after.',
@@ -569,20 +580,22 @@ function doCloseStop(id){
   const ended=d.endedAt||Stops.nowLocal();
   if(ended<s.startedAt){
     toast('That end time is before it started — check it');return;}
-  /* A stoppage closed with no explanation is just a number. Nudge
-     firmly, but let a determined person through — a hard block gets
-     defeated with a full stop and then the data is worse AND the
-     technician is annoyed. */
+  /* A loss closed with no explanation is just a number. Nudge firmly,
+     but let a determined person through — a hard block gets defeated
+     with a full stop and then the data is worse AND the technician is
+     annoyed. */
   if(!d.fixedBy||d.fixedBy.trim().length<5){
     if(!confirm('Nothing written in "what got it running".\n\nThat line is what the next person reads when this happens again. Right now they would get nothing.\n\nClose it anyway?')){
       const el=document.getElementById('f_fixedBy');
       if(el)el.focus();
       return;}}
   DB.upsert('stops',{id:s.id,endedAt:ended,
+    qty:d.qty!==undefined?d.qty:s.qty,
     fixedBy:d.fixedBy||'',closedBy:d.closedBy||DB.getWho()});
   Modal.close();route();
   const mins=Stops.minutes(Object.assign({},s,{endedAt:ended}));
-  toast(s.id+' closed — '+Stops.fmtMins(mins)+' lost');}
+  const parts=DB.num(d.qty)||0;
+  toast(s.id+' closed — '+Stops.fmtMins(mins)+' lost'+(parts?' · '+parts+' parts':''));}
 
 function editWOFromStop(stopId){
   const s=DB.get('stops',stopId);
@@ -592,7 +605,7 @@ function editWOFromStop(stopId){
     description:(s.reason||'')+(s.detail?' — '+s.detail:''),
     type:s.kind==='defect'?'Troubleshoot':'Repair',
     priority:'High', requestedBy:s.by||DB.getWho(),
-    dateRequested:today(), status:'Open', cause:'To be determined',
+    dateRequested:today(), status:'Open', cause:Causes.TBD,
     stopId:s.id};
   DB.upsert('wos',wo);
   DB.upsert('stops',{id:s.id,woId:wo.id});
@@ -601,25 +614,25 @@ function editWOFromStop(stopId){
   setTimeout(()=>editWO(wo.id),150);}
 
 function deleteStop(id){
-  confirmDelete('Delete '+id+'?\n\nThis removes it from every downtime total.',()=>{
+  confirmDelete('Delete '+id+'?\n\nThis removes it from every production loss total.',()=>{
     DB.remove('stops',id);Modal.close();route();toast('Record deleted');});}
 
 function stopCard(h){
   const s=h.stop||h;
   const k=Stops.KINDS[s.kind]||Stops.KINDS.downtime;
   const mins=Stops.minutes(s);
+  const parts=Stops.partsOf(s);
   return `<div class="hit" onclick="viewStop('${jsq(s.id)}')">
     <div class="hit-hd">
       <b class="mono">${esc(s.id)}</b>
       <span class="chip ${s.kind==='defect'?'c-pur':'c-prog'}">${k.label}</span>
-      <span class="hit-when">${esc(fmtLocal(s.startedAt))} · ${esc(Stops.fmtMins(mins))}</span>
+      <span class="hit-when">${esc(fmtLocal(s.startedAt))} · ${esc(Stops.fmtMins(mins))}${parts?' · '+parts+' parts':''}</span>
       ${s.by?`<span class="hit-who">${esc(s.by)}</span>`:''}
     </div>
     <div class="hit-desc">${esc(s.reason||'')}${s.detail?' — '+esc(s.detail):''}</div>
     ${s.fixedBy?`<div class="hit-notes">${esc(s.fixedBy)}</div>`
       :`<div class="hit-notes empty-notes">${Stops.isOpen(s)?'Still open.':'No fix recorded.'}</div>`}
     <div class="hit-ft"><span>${esc(DB.assetName(s.assetId))}</span>
-      ${s.qty?`<span>· ${esc(s.qty)} parts</span>`:''}
       ${s.woId?`<span>· ${esc(s.woId)}</span>`:''}
       ${h.reasons?`<span class="hit-why">${esc(h.reasons.join(' · '))}</span>`:''}
     </div></div>`;}
@@ -629,6 +642,7 @@ function viewStop(id){
   if(!s){toast('That record no longer exists');route();return;}
   const k=Stops.KINDS[s.kind]||Stops.KINDS.downtime;
   const mins=Stops.minutes(s);
+  const parts=Stops.partsOf(s);
   const c=Stops.cost(s);
   const open=Stops.isOpen(s);
   const lessons=Insights.similarStops({assetId:s.assetId,reason:s.reason,
@@ -642,17 +656,18 @@ function viewStop(id){
           ${esc(fmtLocal(s.startedAt))} → ${open?'<b>still down</b>':esc(fmtLocal(s.endedAt))}
         </div>
       </div>
-      <div class="grid g2" style="gap:12px;margin:16px 0">
+      <div class="grid g4" style="gap:12px;margin:16px 0">
         <div class="statmini"><div class="n" style="color:${open?'var(--bad)':'inherit'}">${Stops.fmtMins(mins)}</div>
-          <div class="l">${open?'down so far':'production lost'}</div></div>
+          <div class="l">${open?'down so far':'time lost'}</div></div>
+        <div class="statmini"><div class="n" style="color:${parts?'var(--bad)':'inherit'}">${parts||'—'}</div>
+          <div class="l">parts lost</div></div>
         <div class="statmini"><div class="n">${c===null?'—':money0(c)}</div>
-          <div class="l">${c===null?'no hourly rate set':'estimated cost'}</div></div>
+          <div class="l">${c===null?'no hourly rate':'estimated cost'}</div></div>
       </div>
       ${Stops.isStale(s)?`<div class="note bad">
         <b>Open for more than ${Stops.STALE_HOURS} hours.</b> If the machine is
         running, close it with the real time — left open it keeps counting and
         distorts every total on the reports.</div>`:''}
-      ${s.qty?`<div class="profile-row"><span>Parts affected</span><b>${esc(s.qty)}</b></div>`:''}
       ${s.detail?`<div><div class="profile-label" style="margin-top:14px">What happened</div>
         <div class="pmlog-notes">${esc(s.detail)}</div></div>`:''}
       ${s.fixedBy?`<div><div class="profile-label" style="margin-top:14px">What got it running</div>
@@ -668,8 +683,8 @@ function viewStop(id){
       <button class="btn out" onclick="Modal.close()">Close</button>
       ${DB.can('delete')?`<button class="btn bad" style="margin-left:auto" onclick="deleteStop('${jsq(id)}')">Delete</button>`:''}`});}
 
-/* Deliberately loud and always visible. An open stoppage nobody
-   closes is the single failure mode that makes this worthless. */
+/* Deliberately loud and always visible. An open loss nobody closes
+   is the single failure mode that makes this worthless. */
 function openStopsBanner(){
   const open=Stops.open();
   if(!open.length)return '';
@@ -692,27 +707,48 @@ function openStopsBanner(){
   </div>`;}
 
 /* ============================================================
-   PROBLEMS — the downtime screen
+   PRODUCTION LOSS — the report screen
    ============================================================ */
 function setStopDays(d){STOP_DAYS=d;route();}
 function setStopKind(k){STOP_KIND=k;route();}
 function setStopAsset(a){STOP_ASSET=a;route();}
 
+/* Machines ranked across every window at once. One window alone
+   cannot tell a machine that has always been bad from one that
+   went bad last week — and that is the whole question. */
+function rankingTable(rows,metric){
+  const W=Stops.WINDOWS;
+  if(!rows.length)return '<div class="empty">Nothing recorded yet.</div>';
+  const cell=(c)=>{
+    if(metric==='parts')return c.parts?`<b>${c.parts}</b>`:'<span style="color:var(--muted)">—</span>';
+    return c.mins?`<b>${Stops.fmtMins(c.mins)}</b>`:'<span style="color:var(--muted)">—</span>';};
+  return `<div class="tablewrap"><table>
+    <thead><tr><th>Equipment</th>
+      ${W.map(d=>`<th style="text-align:right">${d} days</th>`).join('')}
+      <th style="text-align:right">Events (${W[W.length-1]}d)</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr class="clk" onclick="openAsset('${jsq(r.assetId)}')">
+      <td><b>${esc(DB.assetName(r.assetId))}</b><br>
+        <small class="mono" style="color:var(--muted)">${esc(r.assetId)}</small></td>
+      ${W.map(d=>`<td class="num">${cell(r.w[d])}</td>`).join('')}
+      <td class="num">${r.w[W[W.length-1]].events}</td>
+    </tr>`).join('')}</tbody></table></div>`;}
+
 function renderStops(){
   const s=Stops.summary({days:STOP_DAYS,assetId:STOP_ASSET,kind:STOP_KIND});
   const pareto=Stops.byReason({days:STOP_DAYS,assetId:STOP_ASSET,kind:STOP_KIND});
   const worst=Stops.byAsset({days:STOP_DAYS,kind:STOP_KIND});
+  const defects=Stops.defectRanking();
+  const downs=Stops.downtimeRanking();
   const repeats=Stops.repeats();
   const assets=DB.all('assets');
   return `
-  <h1 class="page">Problems</h1>
-  <p class="sub">Downtime and defects — how much production was lost, and why.</p>
+  <h1 class="page">Production Loss</h1>
+  <p class="sub">Time lost and parts lost — downtime and defects.</p>
   ${openStopsBanner()}
-  ${bigActions()}
   <div class="chipset">
-    <button class="fchip ${STOP_DAYS===7?'on':''}" onclick="setStopDays(7)">7 days</button>
-    <button class="fchip ${STOP_DAYS===30?'on':''}" onclick="setStopDays(30)">30 days</button>
-    <button class="fchip ${STOP_DAYS===90?'on':''}" onclick="setStopDays(90)">90 days</button>
+    <button class="btn bad" onclick="openStopChooser()">&#9888; Log production loss</button>
+    ${Stops.WINDOWS.map(d=>`<button class="fchip ${STOP_DAYS===d?'on':''}"
+      onclick="setStopDays(${d})">${d} days</button>`).join('')}
     <button class="fchip ${STOP_KIND===''?'on':''}" onclick="setStopKind('')">Both</button>
     <button class="fchip ${STOP_KIND==='downtime'?'on':''}" onclick="setStopKind('downtime')">Downtime</button>
     <button class="fchip ${STOP_KIND==='defect'?'on':''}" onclick="setStopKind('defect')">Defects</button>
@@ -722,21 +758,37 @@ function renderStops(){
     </select>
     <button class="btn out" onclick="exportStops()">&#128196; Export</button>
   </div>
+
   <div class="grid g4" style="margin-bottom:20px">
     <div class="stat"><div class="n" style="color:${s.mins?'var(--bad)':'var(--ok)'}">${Stops.fmtMins(s.mins)}</div>
-      <div class="l">Production lost</div><div class="d">last ${STOP_DAYS} days</div></div>
+      <div class="l">Time lost</div><div class="d">last ${STOP_DAYS} days</div></div>
+    <div class="stat"><div class="n" style="color:${s.parts?'var(--bad)':'var(--ok)'}">${s.parts||0}</div>
+      <div class="l">Parts lost</div><div class="d">${s.defectParts} from defects</div></div>
     <div class="stat"><div class="n">${s.closedCount}</div><div class="l">Events closed</div>
-      <div class="d">${s.openCount} still open</div></div>
-    <div class="stat"><div class="n">${Stops.fmtMins(s.downMins)}</div><div class="l">Machine downtime</div>
-      <div class="d">vs ${Stops.fmtMins(s.defMins)} defects</div></div>
+      <div class="d">${s.defectEvents} defects · ${s.openCount} still open</div></div>
     <div class="stat"><div class="n">${s.cost===null?'—':money0(s.cost)}</div>
       <div class="l">Estimated cost</div>
-      <div class="d">${s.cost===null?'set an hourly rate on equipment':'from equipment hourly rates'}</div></div>
+      <div class="d">${s.cost===null?'set an hourly rate on equipment':'time lost × hourly rate'}</div></div>
   </div>
+
   ${s.staleCount?`<div class="note bad">
     <b>${s.staleCount} record${s.staleCount===1?'':'s'} open for more than ${Stops.STALE_HOURS} hours.</b>
     Almost certainly forgotten rather than genuinely still down. They are kept
     out of the totals above until closed, so the numbers stay honest.</div>`:''}
+
+  <div class="card">
+    <h3 class="sec">High defect machines — parts lost</h3>
+    ${rankingTable(defects,'parts')}
+    <div class="note">Every window side by side. A machine heavy in the
+    7-day column but light in the 90-day one has just started going wrong;
+    the reverse is an old problem somebody has already dealt with.</div>
+  </div>
+
+  <div class="card">
+    <h3 class="sec">Highest downtime machines — time lost</h3>
+    ${rankingTable(downs,'mins')}
+  </div>
+
   ${repeats.length?`<div class="card">
     <h3 class="sec">Same thing, again and again — 3+ times this year</h3>
     <div class="repeats">
@@ -748,7 +800,8 @@ function renderStops(){
         </div>
         <div class="repeat-cause">${esc(r.reason)}</div>
         <div class="repeat-ft">
-          <span><b>${Stops.fmtMins(r.mins)}</b> lost in total</span>
+          <span><b>${Stops.fmtMins(r.mins)}</b> lost</span>
+          ${r.parts?`<span>· <b>${r.parts}</b> parts</span>`:''}
           ${r.cost!==null?`<span>· <b>${money0(r.cost)}</b></span>`:''}
           <span>· last ${esc(fmtLocal(r.last))}</span>
         </div>
@@ -757,23 +810,28 @@ function renderStops(){
     <div class="note">The same reason on the same machine three times is a
     root-cause problem, not bad luck.</div>
   </div>`:''}
+
   ${pareto.length?`<div class="card">
-    <h3 class="sec">Where the time actually goes</h3>
+    <h3 class="sec">Where the loss actually comes from — last ${STOP_DAYS} days</h3>
     <div class="tablewrap"><table>
       <thead><tr><th>Reason</th><th>Type</th><th style="text-align:right">Times</th>
-        <th style="text-align:right">Lost</th><th>Share</th></tr></thead>
+        <th style="text-align:right">Time lost</th><th style="text-align:right">Parts</th>
+        <th>Share of time</th></tr></thead>
       <tbody>${pareto.map(r=>`<tr>
         <td><b>${esc(r.reason)}</b></td>
         <td><span class="chip ${r.kind==='defect'?'c-pur':'c-prog'}">${r.kind==='defect'?'Defect':'Downtime'}</span></td>
         <td class="num">${r.count}</td>
         <td class="num"><b>${Stops.fmtMins(r.mins)}</b></td>
-        <td style="min-width:140px">
+        <td class="num">${r.parts?`<b>${r.parts}</b>`:'<span style="color:var(--muted)">—</span>'}</td>
+        <td style="min-width:130px">
           <div class="bar" style="margin:0"><i style="width:${r.pct}%;background:var(--bad)"></i></div>
           <small style="color:var(--muted)">${r.pct}% · running ${r.cumPct}%</small>
         </td></tr>`).join('')}</tbody>
     </table></div>
-    <div class="note">Sorted by time lost, not by how often it happens.</div>
+    <div class="note">Ranked by time lost. Watch the parts column too — a
+    reason costing minutes but scrapping hundreds is easy to miss here.</div>
   </div>`:''}
+
   ${worst.length?`<div class="card">
     <h3 class="sec">Worst equipment — last ${STOP_DAYS} days</h3>
     ${renderTable([
@@ -781,9 +839,11 @@ function renderStops(){
       {label:'Events',num:true,render:r=>r.count},
       {label:'Downtime',num:true,render:r=>Stops.fmtMins(r.down)},
       {label:'Defects',num:true,hideSm:true,render:r=>Stops.fmtMins(r.defect)},
-      {label:'Total lost',num:true,render:r=>`<b>${Stops.fmtMins(r.mins)}</b>`}
+      {label:'Parts lost',num:true,render:r=>r.parts||'—'},
+      {label:'Total time',num:true,render:r=>`<b>${Stops.fmtMins(r.mins)}</b>`}
     ],worst,{onRow:'openAsset'})}
   </div>`:''}
+
   <div class="card">
     <h3 class="sec">Recent events</h3>
     ${renderTable([
@@ -792,14 +852,15 @@ function renderStops(){
       {label:'Equipment',render:r=>`<b>${esc(DB.assetName(r.assetId))}</b>`},
       {label:'Reason',render:r=>esc(r.reason||'—')},
       {label:'Started',hideSm:true,render:r=>esc(fmtLocal(r.startedAt))},
-      {label:'Lost',num:true,render:r=>Stops.isOpen(r)
+      {label:'Time lost',num:true,render:r=>Stops.isOpen(r)
         ? `<b style="color:var(--bad)">${Stops.fmtMins(Stops.minutes(r))}</b>`
         : Stops.fmtMins(Stops.minutes(r))},
+      {label:'Parts',num:true,render:r=>Stops.partsOf(r)||'—'},
       {label:'Status',render:r=>Stops.isOpen(r)
         ? (Stops.isStale(r)?'<span class="chip c-crit">open, stale</span>':'<span class="chip c-crit">still down</span>')
         : '<span class="chip c-done">closed</span>'},
       {label:'Fix recorded',hideSm:true,render:r=>r.fixedBy
-        ? esc(r.fixedBy.length>48?r.fixedBy.slice(0,48)+'…':r.fixedBy)
+        ? esc(r.fixedBy.length>44?r.fixedBy.slice(0,44)+'…':r.fixedBy)
         : '<span style="color:var(--muted)">—</span>'}
     ],Stops.recent(40),{empty:'Nothing logged yet.',onRow:'viewStop'})}
     ${s.closedCount?`<div class="note">${s.documented} of ${s.closedCount} closed
@@ -809,8 +870,200 @@ function renderStops(){
 function exportStops(){
   const rows=Stops.exportRows({assetId:STOP_ASSET,kind:STOP_KIND});
   if(!rows.length){toast('Nothing to export');return;}
-  CSV.download('downtime-'+today()+'.csv',CSV.build(Stops.EXPORT_COLUMNS,rows));
+  CSV.download('production-loss-'+today()+'.csv',CSV.build(Stops.EXPORT_COLUMNS,rows));
   toast(rows.length+' records exported');}
+
+/* ============================================================
+   CAUSE SETUP (admin)
+   ------------------------------------------------------------
+   The reason lists that appear when somebody schedules work or
+   logs a production loss, held per equipment type.
+   ============================================================ */
+function setCauseKind(k){CAUSE_KIND=k;route();}
+function setCauseType(t){CAUSE_TYPE=t;route();}
+
+function renderCauses(){
+  const sum=Causes.summary();
+  const types=Causes.types();
+  const kind=CAUSE_KIND;
+  const type=CAUSE_TYPE;
+  const lines=Causes.all()
+    .filter(c=>c.kind===kind)
+    .filter(c=>String(c.equipType||'').trim()===String(type||'').trim())
+    .sort((a,b)=>{
+      const sa=DB.num(a.sort),sb=DB.num(b.sort);
+      if(sa!==null&&sb!==null&&sa!==sb)return sa-sb;
+      if(sa!==null&&sb===null)return -1;
+      if(sa===null&&sb!==null)return 1;
+      return String(a.label||'').localeCompare(String(b.label||''));});
+  const effective=Causes.forType(kind,type);
+  const usingDefault=Causes.isFallback(kind,type);
+
+  return `
+  <h1 class="page">Cause Setup</h1>
+  <p class="sub">The reasons your technicians pick from, set per equipment type.</p>
+
+  ${sum.untyped?`<div class="note bad">
+    <b>${sum.untyped} piece${sum.untyped===1?'':'s'} of equipment ${sum.untyped===1?'has':'have'} no type set.</b>
+    A machine with no type always gets the standard list. Set the type on the
+    equipment record to give it its own reasons.
+    <a href="#/assets">Open equipment</a>.</div>`:''}
+
+  <div class="card">
+    <h3 class="sec">Which list are you editing?</h3>
+    <div class="chipset" style="margin-bottom:10px">
+      ${Causes.KINDS.map(k=>`<button class="fchip ${kind===k?'on':''}"
+        onclick="setCauseKind('${k}')">${esc(Causes.KIND_LABEL[k])}</button>`).join('')}
+    </div>
+    <div class="chipset" style="margin-bottom:0">
+      <button class="fchip ${type===''?'on':''}" onclick="setCauseType('')">
+        Every equipment type</button>
+      ${types.map(t=>`<button class="fchip ${type===t?'on':''}"
+        onclick="setCauseType('${jsq(t)}')">${esc(t)}</button>`).join('')}
+    </div>
+    <div class="note">${type===''
+      ? 'Lines here appear on <b>every</b> machine, on top of whatever its own type has.'
+      : `Lines here appear only on equipment of type <b>${esc(type)}</b>, alongside the plant-wide ones.`}</div>
+  </div>
+
+  <div class="card">
+    <h3 class="sec">${esc(Causes.KIND_LABEL[kind])}${type?' · '+esc(type):' · every type'}</h3>
+    <div class="chipset">
+      <button class="btn filled" onclick="addCauseLine()">&#43; Add a reason</button>
+      <button class="btn out" onclick="seedCauseList()">Load the standard list</button>
+      ${lines.length?`<button class="btn out" onclick="renumberCauses()">Tidy the order</button>`:''}
+    </div>
+    ${renderTable([
+      {label:'Order',num:true,render:r=>r.sort||'<span style="color:var(--muted)">—</span>'},
+      {label:'Reason',render:r=>`<b>${esc(r.label)}</b>`},
+      {label:'In use',num:true,render:r=>{
+        const n=Causes.usage(r.kind,r.label);
+        return n?`<b>${n}</b>`:'<span style="color:var(--muted)">0</span>';}},
+      {label:'',render:r=>`<button class="btn out sm" onclick="event.stopPropagation();editCauseLine('${jsq(r.id)}')">Edit</button>`}
+    ],lines,{empty:'Nothing set up here yet — the standard list is being used.'})}
+    ${usingDefault?`<div class="note">
+      <b>Nothing configured, so the standard list is showing to technicians:</b><br>
+      ${effective.map(x=>esc(x)).join(' · ')}<br><br>
+      That is fine — setup is optional. Add your own lines whenever you are ready
+      and they replace the standard ones for this type.</div>`
+    :`<div class="note">Technicians on this type see: ${effective.map(x=>esc(x)).join(' · ')}</div>`}
+  </div>
+
+  <div class="card">
+    <h3 class="sec">Setup so far</h3>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Equipment type</th><th style="text-align:right">Equipment</th>
+        ${Causes.KINDS.map(k=>`<th style="text-align:right">${esc(Causes.KIND_SHORT[k])}</th>`).join('')}
+      </tr></thead>
+      <tbody>${sum.rows.map(r=>`<tr>
+        <td><b>${r.equipType?esc(r.equipType):'Every type (plant-wide)'}</b></td>
+        <td class="num">${r.equipment===null?'—':r.equipment}</td>
+        ${Causes.KINDS.map(k=>`<td class="num">${
+          r.counts[k]?`<b>${r.counts[k]}</b>`
+          :'<span class="chip c-hold">standard</span>'}</td>`).join('')}
+      </tr>`).join('')}</tbody>
+    </table></div>
+    <div class="note">"standard" means nothing is configured and the built-in
+    list is used. Nothing breaks either way.</div>
+  </div>`;}
+
+function causeTypeOptions(current){
+  const types=Causes.types();
+  const out=[{v:'',t:'Every equipment type (plant-wide)'}];
+  types.forEach(t=>out.push({v:t,t:t}));
+  const cur=String(current||'');
+  if(cur&&!types.includes(cur))out.push({v:cur,t:cur});
+  return out;}
+
+function addCauseLine(){
+  Modal.open({title:'Add a reason',
+    body:`${F.select('kind','Which list',CAUSE_KIND,
+        Causes.KINDS.map(k=>({v:k,t:Causes.KIND_LABEL[k]})),{required:true})}
+      ${F.text('equipType','Equipment type',CAUSE_TYPE,
+        {list:'dl_types',datalist:Causes.types(),
+         placeholder:'leave blank for every type',
+         hint:'Must match the type on the equipment record exactly. Leave blank to apply plant-wide.'})}
+      ${F.text('label','The reason',' ',{required:true,
+        placeholder:'e.g. Sonotrode cracked',
+        hint:'Use the words your technicians actually say. A list nobody recognises gets ignored and everything ends up as "Other".'})}
+      ${F.num('sort','Order',null,{step:'1',placeholder:'e.g. 10',
+        hint:'Optional. Lower numbers come first; blank ones sort last by name.'})}
+      <div id="causeMsg"></div>`,
+    footer:`<button class="btn filled" onclick="doAddCause()">Add</button>
+      <button class="btn out" onclick="Modal.close()">Cancel</button>`});
+  setTimeout(()=>{const el=document.getElementById('f_label');if(el)el.value='';},60);}
+
+function doAddCause(){
+  const d=F.read();
+  const msg=document.getElementById('causeMsg');
+  const show=t=>{if(msg)msg.innerHTML=`<div class="note bad">${esc(t)}</div>`;};
+  if(!d.label)return show('Type the reason.');
+  const r=Causes.add(d.kind,d.equipType,d.label,d.sort);
+  if(!r)return show('Type the reason.');
+  if(r.duplicate)return show('That reason is already on this list.');
+  CAUSE_KIND=d.kind;CAUSE_TYPE=(d.equipType||'').trim();
+  Modal.close();route();toast('Added — technicians see it straight away');}
+
+function editCauseLine(id){
+  const c=DB.get('causes',id);
+  if(!c){toast('That line no longer exists');route();return;}
+  const used=Causes.usage(c.kind,c.label);
+  Modal.open({title:'Edit reason',
+    body:`${F.select('kind','Which list',c.kind,
+        Causes.KINDS.map(k=>({v:k,t:Causes.KIND_LABEL[k]})),{required:true})}
+      ${F.text('equipType','Equipment type',c.equipType||'',
+        {list:'dl_types2',datalist:Causes.types(),placeholder:'leave blank for every type'})}
+      ${F.text('label','The reason',c.label,{required:true})}
+      ${F.num('sort','Order',c.sort,{step:'1'})}
+      ${used?`<div class="note"><b>${used} record${used===1?'':'s'} already use this reason.</b>
+        Renaming it here does not rewrite them — they keep the words they were
+        saved with, which is what you want for history. The new name applies
+        from now on.</div>`:''}
+      <div id="causeMsg"></div>`,
+    footer:`<button class="btn filled" onclick="doUpdateCause('${jsq(id)}')">Save</button>
+      <button class="btn out" onclick="Modal.close()">Cancel</button>
+      ${DB.can('delete')?`<button class="btn bad" style="margin-left:auto" onclick="deleteCause('${jsq(id)}')">Delete</button>`:''}`});}
+
+function doUpdateCause(id){
+  const d=F.read();
+  const msg=document.getElementById('causeMsg');
+  if(!d.label){if(msg)msg.innerHTML='<div class="note bad">Type the reason.</div>';return;}
+  DB.upsert('causes',{id,kind:d.kind,equipType:(d.equipType||'').trim(),
+    label:d.label,sort:d.sort||''});
+  CAUSE_KIND=d.kind;CAUSE_TYPE=(d.equipType||'').trim();
+  Modal.close();route();toast('Saved');}
+
+function deleteCause(id){
+  const c=DB.get('causes',id);
+  if(!c)return;
+  const used=Causes.usage(c.kind,c.label);
+  confirmDelete(`Remove "${c.label}" from the list?\n\n`+
+    (used?`${used} record(s) already use it. They keep it — history is not rewritten. It simply stops being offered on new ones.`
+         :'Nothing uses it yet.'),()=>{
+    DB.remove('causes',id);Modal.close();route();toast('Removed from the list');});}
+
+function seedCauseList(){
+  const kindLabel=Causes.KIND_LABEL[CAUSE_KIND];
+  const where=CAUSE_TYPE?`"${CAUSE_TYPE}"`:'every equipment type';
+  confirmDelete(`Copy the standard ${kindLabel.toLowerCase()} into ${where}?\n\n`+
+    'Anything already there is left alone. You can then edit or remove lines.',()=>{
+    const n=Causes.seedDefaults(CAUSE_KIND,CAUSE_TYPE);
+    route();
+    toast(n?n+' reasons added':'Everything was already there');});}
+
+/* Renumber 10, 20, 30 … so a line can be dropped in between two
+   others later without redoing the whole list. */
+function renumberCauses(){
+  const lines=Causes.all()
+    .filter(c=>c.kind===CAUSE_KIND&&String(c.equipType||'').trim()===String(CAUSE_TYPE||'').trim())
+    .sort((a,b)=>{
+      const sa=DB.num(a.sort),sb=DB.num(b.sort);
+      if(sa!==null&&sb!==null&&sa!==sb)return sa-sb;
+      if(sa!==null&&sb===null)return -1;
+      if(sa===null&&sb!==null)return 1;
+      return String(a.label||'').localeCompare(String(b.label||''));});
+  lines.forEach((c,i)=>DB.upsert('causes',{id:c.id,sort:String((i+1)*10)}));
+  route();toast('Order tidied — 10, 20, 30…');}
 
 /* ============================================================
    SMART ASSIST
@@ -834,7 +1087,7 @@ function hitCard(h){
     <div class="hit-hd"><b class="mono">${esc(w.id)}</b>
       <span class="chip c-open">Work order</span>
       <span class="hit-when">${esc(Insights.ago(h.ageDays))}</span>
-      ${w.cause&&w.cause!=='To be determined'?`<span class="chip c-prog">${esc(w.cause)}</span>`:''}
+      ${w.cause&&w.cause!==Causes.TBD?`<span class="chip c-prog">${esc(w.cause)}</span>`:''}
       ${who?`<span class="hit-who">${esc(who)}</span>`:''}</div>
     <div class="hit-desc">${esc(w.description||'')}</div>
     ${w.notes&&w.notes.trim()?`<div class="hit-notes">${esc(w.notes)}</div>`
@@ -849,7 +1102,7 @@ function renderHits(hits,q){
   if(!hits.length){
     return `<div class="empty">
       <b style="display:block;color:var(--ink);margin-bottom:6px">Nothing similar on record</b>
-      ${q?'No closed work order or downtime record matches that yet.':'No history for that machine yet.'}
+      ${q?'No closed work order or production loss record matches that yet.':'No history for that machine yet.'}
       <br><small>Once this job is closed with good notes, it will show up here next time.</small></div>`;}
   return `<div class="hits">${hits.map(hitCard).join('')}</div>`;}
 
@@ -859,7 +1112,7 @@ function renderSmart(){
   const stopRepeats=Stops.repeats();
   return `
   <h1 class="page">Smart Assist</h1>
-  <p class="sub">What this plant has already fixed — from work orders and downtime records.</p>
+  <p class="sub">What this plant has already fixed — from work orders and production loss records.</p>
   <div class="card smartcard">
     <h3 class="sec">Seen this before?</h3>
     <div class="f2">
@@ -892,8 +1145,8 @@ function renderSmart(){
           <b>${esc(DB.assetName(r.assetId))}</b>
           <span class="chip ${r.kind==='defect'?'c-pur':'c-prog'}">${r.kind==='defect'?'Defect':'Downtime'}</span></div>
         <div class="repeat-cause">${esc(r.reason)}</div>
-        <div class="repeat-ft"><span><b>${Stops.fmtMins(r.mins)}</b> lost in total</span>
-          ${r.cost!==null?`<span>· <b>${money0(r.cost)}</b></span>`:''}</div>
+        <div class="repeat-ft"><span><b>${Stops.fmtMins(r.mins)}</b> lost</span>
+          ${r.parts?`<span>· <b>${r.parts}</b> parts</span>`:''}</div>
       </div>`).join('')}
     </div>
   </div>`:''}
@@ -902,7 +1155,7 @@ function renderSmart(){
     <div class="bar"><i style="width:${q.pct}%;background:${q.pct>=70?'var(--ok)':q.pct>=40?'var(--warn)':'var(--bad)'}"></i></div>
     <div class="quality">
       <span><b>${q.usable}</b> of <b>${q.total}</b> closed records explain what was actually done — <b>${q.pct}%</b><br>
-      <small>${q.done} work orders · ${q.stops} downtime and defect records (${q.stopsDocumented} with a fix noted)</small></span>
+      <small>${q.done} work orders · ${q.stops} production loss records (${q.stopsDocumented} with a fix noted)</small></span>
     </div>
     ${q.total===0?`<div class="note">Nothing closed yet.</div>`
       :q.pct<60?`<div class="note bad"><b>Most records do not say what was done.</b>
@@ -912,7 +1165,7 @@ function renderSmart(){
   <div class="card">
     <h3 class="sec">What this is, and is not</h3>
     <div class="tablewrap"><table><tbody>
-      <tr><td>&#10003; Searches your own closed work orders and downtime records</td></tr>
+      <tr><td>&#10003; Searches your own closed work orders and production loss records</td></tr>
       <tr><td>&#10003; Every result links to a real record you can open</td></tr>
       <tr><td>&#10003; Runs on this device — nothing leaves the plant</td></tr>
       <tr><td>&#10003; Works offline</td></tr>
@@ -981,7 +1234,8 @@ function renderHome(){
       <div class="l">Pending work orders</div><div class="d">${progWos.length} in progress</div></div>
     <div class="stat click" onclick="location.hash='#/stops'">
       <div class="n" style="color:${st.mins?'var(--bad)':'var(--ok)'}">${Stops.fmtMins(st.mins)}</div>
-      <div class="l">Lost in 30 days</div><div class="d">${st.closedCount} events</div></div>
+      <div class="l">Lost in 30 days</div>
+      <div class="d">${st.parts?st.parts+' parts · ':''}${st.closedCount} events</div></div>
     ${showComp?`<div class="stat click" onclick="location.hash='#/compliance'">
       <div class="n" style="color:${comp.pct===null?'inherit':comp.pct>=90?'var(--ok)':comp.pct>=70?'var(--warn)':'var(--bad)'}">${comp.pct===null?'—':comp.pct+'%'}</div>
       <div class="l">PM compliance (90d)</div><div class="d">${duePms.length} due this week</div></div>`
@@ -1030,25 +1284,27 @@ function renderDashboard(){
     ${stat('&#129534;','var(--bad-c)','var(--bad)',openWos.length,'Open work orders',
       openWos.filter(w=>w.priority==='High').length+' high priority')}
     ${stat('&#9888;',st.mins?'var(--bad-c)':'var(--ok-c)',st.mins?'var(--bad)':'var(--ok)',
-      Stops.fmtMins(st.mins),'Production lost (30d)',
-      st.cost!==null?money0(st.cost)+' estimated':st.closedCount+' events')}
+      Stops.fmtMins(st.mins),'Time lost (30d)',
+      (st.parts?st.parts+' parts lost':st.closedCount+' events'))}
     ${stat('&#9989;',comp.pct===null?'var(--surf-3)':comp.pct>=90?'var(--ok-c)':'var(--warn-c)',
       comp.pct===null?'var(--muted)':comp.pct>=90?'var(--ok)':'var(--warn)',
       comp.pct===null?'—':comp.pct+'%','PM compliance (90d)',comp.overdueNow+' overdue now')}
   </div>
   ${pareto.length?`<div class="card">
-    <h3 class="sec">Biggest causes of lost production — 30 days</h3>
+    <h3 class="sec">Biggest causes of production loss — 30 days</h3>
     <div class="tablewrap"><table>
       <thead><tr><th>Reason</th><th>Type</th><th style="text-align:right">Times</th>
-        <th style="text-align:right">Lost</th><th>Share</th></tr></thead>
+        <th style="text-align:right">Time lost</th><th style="text-align:right">Parts</th>
+        <th>Share</th></tr></thead>
       <tbody>${pareto.slice(0,6).map(r=>`<tr>
         <td><b>${esc(r.reason)}</b></td>
         <td><span class="chip ${r.kind==='defect'?'c-pur':'c-prog'}">${r.kind==='defect'?'Defect':'Downtime'}</span></td>
         <td class="num">${r.count}</td>
         <td class="num"><b>${Stops.fmtMins(r.mins)}</b></td>
-        <td style="min-width:120px"><div class="bar" style="margin:0"><i style="width:${r.pct}%;background:var(--bad)"></i></div></td>
+        <td class="num">${r.parts||'—'}</td>
+        <td style="min-width:110px"><div class="bar" style="margin:0"><i style="width:${r.pct}%;background:var(--bad)"></i></div></td>
       </tr>`).join('')}</tbody></table></div>
-    <div class="actions"><a class="btn out sm" href="#/stops">Open Problems</a></div>
+    <div class="actions"><a class="btn out sm" href="#/stops">Open Production Loss</a></div>
   </div>`:''}
   ${comp.overdueNow?`<div class="note bad">
     <b>${comp.overdueNow} PM${comp.overdueNow===1?' is':'s are'} overdue right now.</b>
@@ -1114,23 +1370,30 @@ function docChip(url,label){
    ============================================================ */
 function renderAssets(){
   const rows=DB.all('assets').filter(a=>
-    matches(a,['id','name','manufacturer','model','serial','project','location','owner']));
-  const withDocs=rows.filter(a=>safeUrl(a.manualUrl)||safeUrl(a.drawingUrl)).length;
+    matches(a,['id','name','type','manufacturer','model','serial','project','location','owner']));
+  const noType=rows.filter(a=>!a.type||!String(a.type).trim()).length;
   return `
   <h1 class="page">Equipment</h1>
-  <p class="sub">${rows.length} item${rows.length===1?'':'s'}${SEARCH?` matching “${esc(SEARCH)}”`:' in the register'} · ${withDocs} with documents linked</p>
+  <p class="sub">${rows.length} item${rows.length===1?'':'s'}${SEARCH?` matching “${esc(SEARCH)}”`:' in the register'}</p>
   <div class="chipset">
     ${DB.can('createAsset')?'<button class="btn filled" onclick="editAsset()">&#43; New equipment</button>':''}
     ${canView('qr')?'<a class="btn out" href="#/qr">QR tags</a>':''}
     <button class="btn out" onclick="exportCSV('assets')">Export CSV</button>
     ${canView('import')?'<a class="btn out" href="#/import">Import CSV</a>':''}
   </div>
+  ${noType&&canView('causes')?`<div class="note">
+    <b>${noType} item${noType===1?'':'s'} ${noType===1?'has':'have'} no equipment type.</b>
+    Type is what decides which reasons a technician sees when they log work or
+    a production loss. Without it they get the standard list.
+    <a href="#/causes">Cause setup</a>.</div>`:''}
   <div class="card" style="padding:6px 20px 20px">
     <h3 class="sec" style="margin-top:16px">Equipment register</h3>
     ${renderTable([
       {label:'Equipment ID',render:r=>`<b class="mono">${esc(r.id)}</b>`},
       {label:'Name',render:r=>`<b>${esc(r.name||'—')}</b>${r.location?`<br><small style="color:var(--muted)">${esc(r.location)}</small>`:''}`},
-      {label:'Owner',hideSm:true,render:r=>r.owner?esc(r.owner):'<span style="color:var(--muted)">—</span>'},
+      {label:'Type',hideSm:true,render:r=>r.type
+        ?`<span class="chip c-open">${esc(r.type)}</span>`
+        :'<span style="color:var(--muted)">not set</span>'},
       {label:'Docs',render:r=>{
         if(safeUrl(r.manualUrl))return docLink(r.manualUrl,'Manual',{cls:'btn out sm'});
         if(safeUrl(r.drawingUrl))return docLink(r.drawingUrl,'Drawing',{cls:'btn out sm'});
@@ -1141,7 +1404,8 @@ function renderAssets(){
         return `<span class="chip ${r.status==='Down'?'c-crit':r.status==='Retired'?'c-hold':'c-done'}">${esc(r.status||'Active')}</span>`;}},
       {label:'Lost 30d',num:true,hideSm:true,render:r=>{
         const s=Stops.summary({days:30,assetId:r.id});
-        return s.mins?`<b style="color:var(--bad)">${Stops.fmtMins(s.mins)}</b>`:'—';}},
+        if(!s.mins&&!s.parts)return '—';
+        return `<b style="color:var(--bad)">${Stops.fmtMins(s.mins)}</b>${s.parts?`<br><small>${s.parts} parts</small>`:''}`;}},
       {label:'Open WOs',num:true,render:r=>{
         const n=DB.forAsset('wos',r.id).filter(DB.isActive).length;
         return n?`<b style="color:var(--bad)">${n}</b>`:'0';}},
@@ -1156,7 +1420,8 @@ function renderAssetDetail(id){
     <p class="sub">Nothing with ID “${esc(id)}”.</p>
     <a class="btn filled" href="#/assets">Back to equipment</a>`;
   DB.touchAsset(id);
-  const wos=DB.forAsset('wos',id),pms=DB.forAsset('pms',id),parts=DB.forAsset('parts',id);
+  const wos=DB.forAsset('wos',id),pms=DB.forAsset('pms',id);
+  const parts=DB.partsForAsset(id);
   const pending=wos.filter(DB.isOpen);
   const done=wos.filter(DB.isDone);
   const recentRepairs=done.sort((x,y)=>(y.dateCompleted||'').localeCompare(x.dateCompleted||'')).slice(0,5);
@@ -1176,6 +1441,7 @@ function renderAssetDetail(id){
   <div class="ahead"><div class="big">&#9881;</div>
     <div class="who"><h1>${esc(a.name||a.id)}</h1>
       <div class="meta">Equipment <b class="mono">${esc(a.id)}</b>${a.serial?` · Serial <b class="mono">${esc(a.serial)}</b>`:''}<br>
+        ${a.type?`Type: <b>${esc(a.type)}</b><br>`:''}
         ${a.manufacturer?esc(a.manufacturer):'Manufacturer not set'}${a.model?' · '+esc(a.model):''}${a.location?' · '+esc(a.location):''}
         ${a.owner?`<br>Responsible: <b>${esc(a.owner)}</b>`:''}
         ${a.hourlyCost?`<br>Downtime rate: <b>$${esc(a.hourlyCost)}/hour</b>`:''}</div>
@@ -1191,7 +1457,7 @@ function renderAssetDetail(id){
     <b>Recurring problem on this machine.</b>
     ${myRepeats.map(r=>`<b>${esc(r.cause)}</b> ${r.count} times`).join('; ')}
     ${myRepeats.length&&stopRepeats.length?'; ':''}
-    ${stopRepeats.map(r=>`<b>${esc(r.reason)}</b> ${r.count} times (${Stops.fmtMins(r.mins)} lost)`).join('; ')}.
+    ${stopRepeats.map(r=>`<b>${esc(r.reason)}</b> ${r.count} times (${Stops.fmtMins(r.mins)}${r.parts?', '+r.parts+' parts':''} lost)`).join('; ')}.
     </div>`:''}
   ${bigActions(a.id)}
   ${hasDocs?`<div class="card doccard"><h3 class="sec">Documentation</h3>
@@ -1210,8 +1476,8 @@ function renderAssetDetail(id){
     <div class="stat click" onclick="setStopAsset('${jsq(a.id)}');location.hash='#/stops'">
       <div class="ic" style="background:var(--bad-c);color:var(--bad)">&#9888;</div>
       <div class="n" style="color:${st.mins?'var(--bad)':'inherit'}">${Stops.fmtMins(st.mins)}</div>
-      <div class="l">Lost in 90 days</div>
-      <div class="d">${st.cost!==null?money0(st.cost):st.closedCount+' events'}</div></div>
+      <div class="l">Time lost (90d)</div>
+      <div class="d">${st.parts?st.parts+' parts lost':st.closedCount+' events'}</div></div>
     ${showComp?`<div class="stat click" onclick="setCompAsset('${jsq(a.id)}');location.hash='#/compliance'">
       <div class="ic" style="background:var(--ok-c);color:var(--ok)">&#9989;</div>
       <div class="n" style="color:${comp.pct===null?'inherit':comp.pct>=90?'var(--ok)':comp.pct>=70?'var(--warn)':'var(--bad)'}">${comp.pct===null?'—':comp.pct+'%'}</div>
@@ -1223,16 +1489,17 @@ function renderAssetDetail(id){
       <div class="d">${health.hours.toFixed(1)}h logged</div></div>
   </div>
   ${myStops.length?`<div class="card">
-    <h3 class="sec">Downtime &amp; defects — last ${myStops.length}</h3>
+    <h3 class="sec">Production loss — last ${myStops.length}</h3>
     ${renderTable([
       {label:'When',render:r=>esc(fmtLocal(r.startedAt))},
       {label:'Type',render:r=>`<span class="chip ${r.kind==='defect'?'c-pur':'c-prog'}">${r.kind==='defect'?'Defect':'Downtime'}</span>`},
       {label:'Reason',render:r=>`<b>${esc(r.reason||'—')}</b>`},
-      {label:'Lost',num:true,render:r=>Stops.isOpen(r)
+      {label:'Time lost',num:true,render:r=>Stops.isOpen(r)
         ?`<b style="color:var(--bad)">${Stops.fmtMins(Stops.minutes(r))}</b>`
         :Stops.fmtMins(Stops.minutes(r))},
+      {label:'Parts',num:true,render:r=>Stops.partsOf(r)||'—'},
       {label:'What fixed it',hideSm:true,render:r=>r.fixedBy
-        ?esc(r.fixedBy.length>44?r.fixedBy.slice(0,44)+'…':r.fixedBy)
+        ?esc(r.fixedBy.length>40?r.fixedBy.slice(0,40)+'…':r.fixedBy)
         :'<span style="color:var(--muted)">—</span>'}
     ],myStops,{onRow:'viewStop'})}
   </div>`:''}
@@ -1285,11 +1552,17 @@ function renderAssetDetail(id){
     ${renderTable([
       {label:'Part number',render:r=>`<b class="mono">${esc(r.id)}</b>`},
       {label:'Description',render:r=>`${esc(r.description||'')} ${docChip(r.docUrl,'Spec sheet')}`},
-      {label:'Mfr P/N',hideSm:true,render:r=>`<span class="mono">${esc(r.mfrPn||'—')}</span>`},
+      {label:'Also fits',hideSm:true,render:r=>{
+        const others=DB.partAssets(r).filter(x=>x!==id);
+        if(!others.length)return '<span style="color:var(--muted)">this machine only</span>';
+        return others.map(x=>`<span class="chip c-hold">${esc(DB.assetName(x))}</span>`).join(' ');}},
       {label:'Bin location',render:r=>`<span class="mono">${esc(r.location||'—')}</span>`},
       {label:'On hand',num:true,render:r=>r.qty??'—'},
       {label:'Status',render:r=>{const s=DB.partStatus(r);return `<span class="chip ${s.cls}">${s.label}</span>`;}}
     ],parts,{empty:'No parts linked yet.',onRow:'editPart'})}
+    ${parts.some(p=>DB.partAssets(p).length>1)?`<div class="note">
+      Parts marked "also fits" are shared with other machines — one stock
+      figure, counted once, visible from every machine that uses them.</div>`:''}
   </div>`;}
 
 function newWOFor(a){editWO(null,a);}
@@ -1300,7 +1573,7 @@ function newPartFor(a){editPart(null,a);}
    QR TAGS
    ============================================================ */
 function renderQR(){
-  const assets=DB.all('assets').filter(a=>matches(a,['id','name','location','manufacturer']));
+  const assets=DB.all('assets').filter(a=>matches(a,['id','name','location','manufacturer','type']));
   const base=appBaseUrl();
   const test=qrSelfTest();
   if(!base)return `<h1 class="page">QR Tags</h1>
@@ -1361,9 +1634,13 @@ function editAsset(id){
   Modal.open({title:isNew?'New equipment':'Equipment '+a.id,
     body:`${F.text('id','Equipment ID',a.id||DB.nextId('assets','',4),{required:true,readonly:!isNew})}
       ${F.text('name','Name',a.name,{required:true,placeholder:'e.g. Top Roll Assembly'})}
+      ${F.text('type','Equipment type',a.type,
+        {list:'dl_equiptypes',datalist:Causes.types(),
+         placeholder:'e.g. Ultrasonic welder',
+         hint:'Decides which reasons a technician sees when logging work or a production loss. Machines of the same type share one list.'})}
       <div class="f2">
         <div>${F.text('manufacturer','Manufacturer',a.manufacturer)}</div>
-        <div>${F.text('model','Model',a.model,{hint:'Machines sharing a model are matched together in Smart Assist.'})}</div>
+        <div>${F.text('model','Model',a.model)}</div>
         <div>${F.text('serial','Serial number',a.serial)}</div>
         <div>${F.text('project','Project number',a.project)}</div>
         <div>${F.text('location','Location / line',a.location)}</div>
@@ -1371,7 +1648,7 @@ function editAsset(id){
       </div>
       ${F.person('owner','Responsible person',a.owner,{emptyLabel:'— nobody assigned —'})}
       ${F.num('hourlyCost','Downtime cost per hour',a.hourlyCost,{step:'1',placeholder:'e.g. 500',
-        hint:'Optional. Set this and every downtime record on this machine gets a dollar figure. Leave blank rather than guessing.'})}
+        hint:'Optional. Set this and every production loss on this machine gets a dollar figure. Leave blank rather than guessing.'})}
       <h3 class="sec" style="margin-top:24px">Documentation</h3>
       ${F.text('manualUrl','Machine manual link',a.manualUrl,{placeholder:'https://iacgroup.sharepoint.com/...',hint:LINK_HINT})}
       ${F.text('drawingUrl','Drawings / schematics link',a.drawingUrl,{placeholder:'https://iacgroup.sharepoint.com/...'})}
@@ -1395,7 +1672,7 @@ function saveAsset(isNew){
 function delAsset(id){
   const pms=DB.forAsset('pms',id).length,wos=DB.forAsset('wos',id).length;
   const stops=Stops.forAsset(id).length;
-  confirmDelete(`Delete equipment ${id}?\n\n${pms} PM(s), ${wos} work order(s) and ${stops} downtime record(s) will be unlinked but not deleted.`,()=>{
+  confirmDelete(`Delete equipment ${id}?\n\n${pms} PM(s), ${wos} work order(s) and ${stops} production loss record(s) will be unlinked but not deleted.`,()=>{
     DB.remove('assets',id);Modal.close();location.hash='#/assets';toast('Equipment deleted');});}
 
 /* ============================================================
@@ -1449,7 +1726,7 @@ function genWO(pmId){
     priority:(DB.daysUntil(p.nextDue)??99)<0?'High':'Medium',
     assignedTo:p.tech||'',docUrl:p.procedureUrl||'',
     requestedBy:DB.getWho(),dateRequested:today(),dateDue:p.nextDue||today(),
-    status:'Open',pmId:p.id,cause:'To be determined'};
+    status:'Open',pmId:p.id,cause:Causes.TBD};
   DB.upsert('wos',wo);
   WORK_TAB='wo';route();
   toast(wo.id+' created from '+p.id+(wo.assignedTo?' for '+wo.assignedTo:''));}
@@ -1652,8 +1929,9 @@ function renderWOCalendar(){
   DB.all('stops').forEach(s=>{
     const day=String(s.startedAt||'').slice(0,10);
     if(!day)return;
+    const parts=Stops.partsOf(s);
     push(day,`<div class="ev ev-stop" title="${esc((s.reason||'')+' · '+DB.assetName(s.assetId))}"
-      onclick="viewStop('${jsq(s.id)}')">&#9888; ${esc(Stops.fmtMins(Stops.minutes(s)))}</div>`);});
+      onclick="viewStop('${jsq(s.id)}')">&#9888; ${esc(Stops.fmtMins(Stops.minutes(s)))}${parts?' · '+parts+'p':''}</div>`);});
   let cells='';
   for(let i=0;i<startPad;i++)cells+='<div class="day pad"></div>';
   for(let d=1;d<=daysInMonth;d++){
@@ -1676,27 +1954,42 @@ function renderWOCalendar(){
       <span><i style="background:var(--warn-c)"></i>In progress</span>
       <span><i style="background:var(--ok-c)"></i>Completed</span>
       ${CAL.pms?'<span><i style="background:var(--pur-c)"></i>PM due</span><span><i style="background:#d7f0dd"></i>PM done</span>':''}
-      <span><i style="background:#ffd9d6"></i>Downtime</span>
+      <span><i style="background:#ffd9d6"></i>Production loss</span>
     </div></div>`;}
+
+/* The cause list depends on which machine is picked, so changing
+   the machine rebuilds it. */
+function refreshWOCause(excludeId){
+  const box=document.getElementById('woCauseBox');
+  if(!box)return;
+  const d=F.read();
+  const a=DB.get('assets',d.assetId||'');
+  box.innerHTML=F.select('cause','Cause of failure',d.cause||Causes.TBD,
+    Causes.options('failure',a&&a.type?a.type:'',d.cause||'',{tbd:true}),
+    {onchange:`refreshSimilar('${jsq(excludeId||'')}')`})+
+    (a&&a.type?`<div class="hint">List for <b>${esc(a.type)}</b>.</div>`:'');
+  refreshSimilar(excludeId);}
 
 function editWO(id,presetAsset){
   if(id&&!DB.get('wos',id)){toast('That work order no longer exists');route();return;}
   const w=id?DB.get('wos',id):{};
   const isNew=!id;
-  const partOpts=[{v:'',t:'— none —'}].concat(
-    DB.all('parts').filter(p=>!w.assetId||!p.assetId||p.assetId===w.assetId||p.assetId===presetAsset)
-      .map(p=>({v:p.id,t:p.id+' · '+(p.description||'')})));
-  const asset=DB.get('assets',w.assetId||presetAsset||'');
+  const assetId=w.assetId||presetAsset||'';
+  const asset=DB.get('assets',assetId);
   const exclude=w.id||'';
+  /* Parts that fit this machine, plus whatever was already chosen. */
+  const partOpts=[{v:'',t:'— none —'}].concat(
+    DB.all('parts').filter(p=>!assetId||!DB.partAssets(p).length||DB.partFits(p,assetId)||p.id===w.partsUsed)
+      .map(p=>({v:p.id,t:p.id+' · '+(p.description||'')})));
   Modal.open({title:isNew?'New work order':'Work order '+w.id,
     body:`${F.text('id','Work order number',w.id||DB.nextId('wos','WO-',4),{required:true,readonly:!isNew})}
-      ${F.select('assetId','Equipment',w.assetId||presetAsset||'',assetOptions(),
-        {required:true,onchange:`refreshSimilar('${jsq(exclude)}')`})}
+      ${F.select('assetId','Equipment',assetId,assetOptions(),
+        {required:true,onchange:`refreshWOCause('${jsq(exclude)}')`})}
       ${asset&&(safeUrl(asset.manualUrl)||safeUrl(asset.drawingUrl))?`<div class="actions" style="margin-top:10px">
         ${docLink(asset.manualUrl,'Machine manual',{cls:'btn tonal sm',icon:'&#128214;'})}
         ${docLink(asset.drawingUrl,'Drawings',{cls:'btn tonal sm',icon:'&#128208;'})}</div>`:''}
       ${F.area('description','Description of work',w.description,3,{oninput:`refreshSimilar('${jsq(exclude)}')`})}
-      <div id="similarBox">${similarPanel(w.assetId||presetAsset||'',w.description||'',w.cause||'',exclude)}</div>
+      <div id="similarBox">${similarPanel(assetId,w.description||'',w.cause||'',exclude)}</div>
       <div class="f2">
         <div>${F.select('type','Work type',w.type||'Repair',WO_TYPES)}</div>
         <div>${F.select('priority','Priority',w.priority||'Medium',PRIORITIES)}</div>
@@ -1712,8 +2005,9 @@ function editWO(id,presetAsset){
         <div>${F.num('hours','Labour hours',w.hours,{step:'0.5'})}</div>
         <div>${F.num('cost','Cost',w.cost,{step:'0.01'})}</div>
       </div>
-      ${F.select('cause','Cause of failure',w.cause||'To be determined',CAUSES,
-        {onchange:`refreshSimilar('${jsq(exclude)}')`})}
+      <div id="woCauseBox">${F.select('cause','Cause of failure',w.cause||Causes.TBD,
+        Causes.options('failure',asset&&asset.type?asset.type:'',w.cause||'',{tbd:true}),
+        {onchange:`refreshSimilar('${jsq(exclude)}')`})}</div>
       ${F.select('partsUsed','Parts used',w.partsUsed,partOpts)}
       ${F.area('notes','What you found and what you did',w.notes,4,
         {placeholder:'e.g. Sonotrode face was pitted. Swapped in CT_12672, retorqued stack to 45 Nm.',
@@ -1721,7 +2015,7 @@ function editWO(id,presetAsset){
       ${F.text('docUrl','Reference document link',w.docUrl,{placeholder:'https://...',hint:LINK_HINT})}
       ${w.pmId?`<div class="note">Generated from PM <b>${esc(w.pmId)}</b>.
         Completing this also records a PM completion.</div>`:''}
-      ${w.stopId?`<div class="note">Raised from downtime record <b>${esc(w.stopId)}</b>.
+      ${w.stopId?`<div class="note">Raised from production loss <b>${esc(w.stopId)}</b>.
         <a href="#" onclick="Modal.close();viewStop('${jsq(w.stopId)}');return false;">Open it</a>.</div>`:''}
       ${!isNew&&w.updatedBy?`<div class="note">Last changed by <b>${esc(w.updatedBy)}</b></div>`:''}`,
     footer:`<button class="btn filled" onclick="saveWO(${isNew})">Save work order</button>
@@ -1740,7 +2034,7 @@ function saveWO(isNew){
 
 function closeWO(id){
   const d=F.read();
-  if(!d.cause||d.cause==='To be determined'){toast('Record a cause of failure before completing');return;}
+  if(!d.cause||d.cause===Causes.TBD){toast('Record a cause of failure before completing');return;}
   if(!d.notes||d.notes.trim().length<10){
     if(!confirm('No notes written.\n\nWhat you found and what you did is what the next person sees when this happens again.\n\nClose it anyway?')){
       const el=document.getElementById('f_notes');
@@ -1769,7 +2063,7 @@ function delWO(id){
     DB.remove('wos',id);Modal.close();route();toast('Work order deleted');});}
 
 /* ============================================================
-   SPARE PARTS
+   SPARE PARTS — one part can fit several machines
    ============================================================ */
 function renderParts(){
   const rows=DB.all('parts').filter(p=>matches(p,['id','description','mfrPn','vendor','location','assetId']));
@@ -1777,13 +2071,14 @@ function renderParts(){
     const q=DB.num(p.qty),c=DB.num(p.cost);
     return s+(q!==null&&c!==null?q*c:0);},0);
   const low=rows.filter(p=>DB.partStatus(p).label==='Low stock').length;
+  const shared=rows.filter(p=>DB.partAssets(p).length>1).length;
   return `
   <h1 class="page">Spare Parts</h1>
-  <p class="sub">${rows.length} part${rows.length===1?'':'s'} in the crib</p>
+  <p class="sub">${rows.length} part${rows.length===1?'':'s'} in the crib${shared?` · ${shared} shared across machines`:''}</p>
   <div class="grid g4" style="margin-bottom:20px">
     <div class="stat"><div class="n">${rows.length}</div><div class="l">Parts tracked</div></div>
     <div class="stat"><div class="n" style="color:${low?'var(--bad)':'inherit'}">${low}</div><div class="l">At or below minimum</div></div>
-    <div class="stat"><div class="n">${rows.filter(p=>DB.num(p.qty)===null).length}</div><div class="l">Not yet counted</div></div>
+    <div class="stat"><div class="n">${shared}</div><div class="l">Fit more than one machine</div></div>
     <div class="stat"><div class="n">${value?'$'+value.toLocaleString(undefined,{maximumFractionDigits:0}):'—'}</div><div class="l">Inventory value</div></div>
   </div>
   <div class="chipset">
@@ -1794,9 +2089,17 @@ function renderParts(){
     <h3 class="sec" style="margin-top:16px">Parts list</h3>
     ${renderTable([
       {label:'Part number',render:r=>`<b class="mono">${esc(r.id)}</b>`},
-      {label:'Description',render:r=>`<b>${esc(r.description||'—')}</b> ${docChip(r.docUrl,'Spec sheet')}<br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>`},
+      {label:'Description',render:r=>`<b>${esc(r.description||'—')}</b> ${docChip(r.docUrl,'Spec sheet')}`},
+      {label:'Fits',render:r=>{
+        const ids=DB.partAssets(r);
+        if(!ids.length)return '<span style="color:var(--muted)">not linked</span>';
+        if(ids.length===1)return esc(DB.assetName(ids[0]));
+        /* Naming every machine makes the column unreadable once a part
+           fits five of them; the count plus the first is enough to
+           recognise it, and the full list is one tap away. */
+        return `<b>${ids.length} machines</b><br><small style="color:var(--muted)">${
+          esc(DB.assetName(ids[0]))} +${ids.length-1} more</small>`;}},
       {label:'Mfr P/N',hideSm:true,render:r=>`<span class="mono">${esc(r.mfrPn||'—')}</span>`},
-      {label:'Vendor',key:'vendor',hideSm:true},
       {label:'Location',render:r=>`<span class="mono">${esc(r.location||'—')}</span>`},
       {label:'On hand',num:true,render:r=>r.qty??'—'},
       {label:'Min',num:true,hideSm:true,render:r=>r.min??'—'},
@@ -1810,11 +2113,14 @@ function editPart(id,presetAsset){
   if(id&&!DB.get('parts',id)){toast('That part no longer exists');route();return;}
   const p=id?DB.get('parts',id):{};
   const isNew=!id;
+  /* Pre-tick whichever machine we came from. */
+  const selected=isNew?(presetAsset?[presetAsset]:[]):DB.partAssets(p);
   Modal.open({title:isNew?'New part':'Part '+p.id,
     body:`${safeUrl(p.imageUrl)?`<div class="prev"><img src="${esc(safeUrl(p.imageUrl))}" alt="" onerror="this.parentNode.style.display='none'"/></div>`:''}
       ${F.text('id','Part number',p.id||DB.nextId('parts','P-',4),{required:true,readonly:!isNew})}
       ${F.text('description','Description',p.description,{required:true})}
-      ${F.select('assetId','Used on equipment',p.assetId||presetAsset||'',assetOptions())}
+      ${F.checks('assetIds','Fits which equipment',selected,assetChecklist(),
+        {hint:'Tick every machine this part fits. One stock figure, counted once, visible from each of them.'})}
       <div class="f2">
         <div>${F.text('mfrPn','Manufacturer part number',p.mfrPn)}</div>
         <div>${F.text('vendor','Vendor',p.vendor)}</div>
@@ -1834,7 +2140,13 @@ function savePart(isNew){
   if(!d.id||!d.description){toast('Part number and description are required');return;}
   if(isNew&&DB.get('parts',d.id)){toast('That part number already exists');return;}
   if(d.docUrl&&!safeUrl(d.docUrl)){toast('The document link is not a valid web address');return;}
-  DB.upsert('parts',d);Modal.close();route();toast('Part '+d.id+' saved');}
+  /* Writes assetIds AND assetId so anything still reading the old
+     single field — CSV export, an older cached client — keeps working. */
+  const rec=Object.assign({},d,DB.partAssetFields(d.assetIds));
+  DB.upsert('parts',rec);Modal.close();route();
+  const n=rec.assetIds.length;
+  toast('Part '+rec.id+' saved'+(n>1?' — fits '+n+' machines':''));}
+
 function delPart(id){
   confirmDelete('Delete part '+id+'?',()=>{DB.remove('parts',id);Modal.close();route();toast('Part deleted');});}
 function countPart(id){
@@ -1850,7 +2162,8 @@ function countPart(id){
    ============================================================ */
 let IMPORT={entity:'assets',headers:[],records:[],map:{},filename:''};
 const ENTITY_LABEL={assets:'Equipment',pms:'PM Schedule',parts:'Spare Parts',
-  wos:'Work Orders',pmlogs:'PM Completion History',stops:'Downtime & Defects'};
+  wos:'Work Orders',pmlogs:'PM Completion History',stops:'Production Loss',
+  causes:'Cause Lists'};
 
 function renderImport(){
   const fieldList=e=>Object.keys(CSV.ALIAS[e]).join(', ');
@@ -1861,8 +2174,16 @@ function renderImport(){
     <div class="chipset">${Object.keys(ENTITY_LABEL).map(e=>
       `<button class="fchip ${IMPORT.entity===e?'on':''}" onclick="setImportEntity('${e}')">${ENTITY_LABEL[e]}</button>`).join('')}</div>
     <div class="note">Recognised fields for <b>${ENTITY_LABEL[IMPORT.entity]}</b>: <span class="mono">${fieldList(IMPORT.entity)}</span>.
+      ${IMPORT.entity==='parts'?`<br><br><b>A part that fits several machines:</b> put every
+      equipment number in one cell separated by semicolons — <span class="mono">3526;3527;3530</span>
+      — and map that column to <span class="mono">assetIds</span>.`:''}
       ${IMPORT.entity==='stops'?`<br><br>Times can be <span class="mono">YYYY-MM-DD HH:MM</span>.
-      A row with no end time imports as still open.`:''}</div>
+      A row with no end time imports as still open. Map your scrap count to
+      <span class="mono">qty</span> so parts lost is counted.`:''}
+      ${IMPORT.entity==='causes'?`<br><br>Bulk-load your reason lists. <span class="mono">kind</span>
+      must be <span class="mono">downtime</span>, <span class="mono">defect</span> or
+      <span class="mono">failure</span>; <span class="mono">equipType</span> must match the type
+      on the equipment record, or be blank for plant-wide.`:''}</div>
   </div>
   <div class="card"><h3 class="sec">2 · Load the file</h3>
     <div class="drop" id="drop" ondragover="event.preventDefault();this.classList.add('over')"
@@ -1926,7 +2247,7 @@ function readCSVFile(file){
 
 function runImport(){
   const clean=CSV.applyMap(IMPORT.records,IMPORT.map);
-  const prefix={assets:'',pms:'PM-',parts:'P-',wos:'WO-',pmlogs:'PMC-',stops:'EV-'}[IMPORT.entity];
+  const prefix={assets:'',pms:'PM-',parts:'P-',wos:'WO-',pmlogs:'PMC-',stops:'EV-',causes:'CZ-'}[IMPORT.entity];
   const pad=(IMPORT.entity==='pmlogs'||IMPORT.entity==='stops')?5:4;
   clean.forEach((r,i)=>{
     if(!r.id)r.id=DB.nextId(IMPORT.entity,prefix,pad)+(i?'-'+i:'');
@@ -1938,7 +2259,19 @@ function runImport(){
       ['startedAt','endedAt'].forEach(k=>{
         if(r[k])r[k]=String(r[k]).trim().replace(' ','T').slice(0,16);});
       const k=String(r.kind||'').toLowerCase();
-      r.kind=k.includes('defect')||k.includes('quality')||k.includes('scrap')?'defect':'downtime';}});
+      r.kind=k.includes('defect')||k.includes('quality')||k.includes('scrap')?'defect':'downtime';}
+    if(IMPORT.entity==='parts'){
+      /* "3526;3527" in one cell becomes a proper list, and the legacy
+         single field is filled so nothing reading it breaks. */
+      const ids=[];
+      const push=v=>String(v||'').split(/[;,|]/).forEach(x=>{
+        const s=x.trim();if(s&&!ids.includes(s))ids.push(s);});
+      push(r.assetIds);push(r.assetId);
+      Object.assign(r,DB.partAssetFields(ids));}
+    if(IMPORT.entity==='causes'){
+      const k=String(r.kind||'').toLowerCase();
+      r.kind=k.includes('defect')?'defect':k.includes('fail')?'failure':'downtime';
+      r.equipType=String(r.equipType||'').trim();}});
   const {added,updated}=DB.bulkUpsert(IMPORT.entity,clean);
   const ent=IMPORT.entity;
   cancelImport();
@@ -1946,11 +2279,15 @@ function runImport(){
   if(ent==='wos')WORK_TAB='wo';
   if(ent==='pms')WORK_TAB='pm';
   location.hash='#/'+({assets:'assets',pms:'pm',parts:'parts',wos:'wo',
-    pmlogs:'compliance',stops:'stops'}[ent]);}
+    pmlogs:'compliance',stops:'stops',causes:'causes'}[ent]);}
 
 function exportCSV(entity){
   const fields=Object.keys(CSV.ALIAS[entity]);
-  const rows=DB.all(entity);
+  const rows=DB.all(entity).map(r=>{
+    if(entity!=='parts')return r;
+    /* Export the full list in one cell so a round trip keeps every
+       machine, not just the first. */
+    return Object.assign({},r,{assetIds:DB.partAssets(r).join(';')});});
   if(!rows.length){toast('Nothing to export');return;}
   CSV.download(entity+'-'+today()+'.csv',CSV.build(fields,rows));
   toast(rows.length+' rows exported');}
@@ -1995,26 +2332,27 @@ function renderUsers(){
           text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">Screens</td></tr>
         <tr><td>Home</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Equipment</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Work (orders + PM)</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Problems (downtime)</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Schedule Work</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Production Loss</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Spare Parts</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Smart Assist</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Settings <small style="color:var(--muted)">(password only)</small></td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Dashboard</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
         <tr><td>PM Compliance</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
+        <tr><td>Cause Setup</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
         <tr><td>QR Tags</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
         <tr><td>Import CSV · Users</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
         <tr><td colspan="3" style="background:var(--surf-1);font-weight:600;font-size:11px;
           text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">Actions</td></tr>
-        <tr><td>Raise and complete work orders</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Log and close downtime</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Schedule and complete work orders</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Log and close production loss</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Record PM completions</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Add and edit equipment, PMs, parts</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td><b>Edit the cause lists</b></td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
         <tr><td><b>Delete</b> anything</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
       </tbody></table></div>
     <div class="note">Maintenance still <b>reads</b> every record — a technician at a machine
-    needs its full history. What is hidden is the reporting and setup screens, and what is
-    blocked is deleting, importing and managing accounts.</div>
+    needs its full history. What is hidden is the reporting and setup screens.</div>
   </div>`;}
 
 function refreshUsers(){
@@ -2029,12 +2367,13 @@ function openAddUser(){
     body:`${F.text('name','Full name','',{required:true,placeholder:'e.g. John Davis'})}
       ${F.text('username','Username','',{required:true,placeholder:'e.g. jdavis',autocomplete:'off'})}
       ${F.select('role','Role','maintenance',[
-        {v:'maintenance',t:'Maintenance — the five floor screens'},
-        {v:'admin',t:'Admin — everything, including reports and users'}])}
+        {v:'maintenance',t:'Maintenance — the floor screens'},
+        {v:'admin',t:'Admin — everything, including setup and reports'}])}
       ${F.text('password','Temporary password','',{required:true,type:'text',autocomplete:'off'})}
       <div id="userMsg"></div>
-      <div class="note"><b>Maintenance</b> sees Equipment, Work, Problems, Spare Parts and
-      Smart Assist. <b>Admin</b> also gets Dashboard, PM Compliance, QR Tags, Import and Users.</div>`,
+      <div class="note"><b>Maintenance</b> sees Equipment, Schedule Work, Production Loss,
+      Spare Parts and Smart Assist. <b>Admin</b> also gets Dashboard, PM Compliance,
+      Cause Setup, QR Tags, Import and Users.</div>`,
     footer:`<button class="btn filled" onclick="doAddUser()">Create account</button>
       <button class="btn out" onclick="Modal.close()">Cancel</button>`});}
 
@@ -2059,8 +2398,8 @@ function openEditUser(username){
     body:`${F.text('name','Full name',u.full_name)}
       ${F.text('username','Username',u.username,{readonly:true})}
       ${F.select('role','Role',u.role,[
-        {v:'maintenance',t:'Maintenance — the five floor screens'},
-        {v:'admin',t:'Admin — everything, including reports and users'}])}
+        {v:'maintenance',t:'Maintenance — the floor screens'},
+        {v:'admin',t:'Admin — everything, including setup and reports'}])}
       <div class="note">Changing the role changes which screens they see next time they load the app.</div>
       ${isMe?'<div class="note">This is your own account. You cannot lock yourself out.</div>':''}
       ${openWos.length?`<div class="note"><b>${openWos.length} open work order${openWos.length===1?'':'s'}</b> assigned.</div>`:''}
@@ -2096,17 +2435,11 @@ function setUserActive(username,active){
 
 /* ============================================================
    SETTINGS
-   ------------------------------------------------------------
-   Maintenance gets a cut-down version: their account, their
-   password, and whether they are online. Without this they could
-   never change the temporary password they were given, which is
-   worse than showing them a short page.
    ============================================================ */
 function renderSettings(){
   const db=DB.raw();
   const s=DB.status();
   const admin=DB.isAdmin();
-
   const account=`
   <div class="card"><h3 class="sec">Your account</h3>
     <div class="tablewrap"><table><tbody>
@@ -2117,7 +2450,6 @@ function renderSettings(){
     <div class="actions">
       <button class="btn filled" onclick="openChangePassword(false)">Change my password</button>
       <button class="btn out" onclick="signOut()">Sign out</button></div></div>`;
-
   const connection=`
   <div class="card"><h3 class="sec">Connection</h3>
     ${s.mode==='cloud'
@@ -2129,20 +2461,19 @@ function renderSettings(){
          Your work is saved here and sent automatically when the connection returns.</div>`}
     <div class="actions">
       <button class="btn filled" onclick="reconnect()">${s.mode==='cloud'?'Refresh now':'Try to reconnect'}</button></div></div>`;
-
   if(!admin){
     return `
     <h1 class="page">Settings</h1>
     <p class="sub">Signed in as <b>${esc(s.who)}</b> · ${esc(ROLE_LABEL[s.role]||s.role)}</p>
     ${account}
     ${connection}`;}
-
   const counts={Equipment:db.assets.length,PMs:db.pms.length,Parts:db.parts.length,
     'Work orders':db.wos.length,'PM completions':db.pmlogs.length,
-    'Downtime & defects':db.stops.length};
+    'Production loss':db.stops.length,'Cause lines':db.causes.length};
   const total=Object.values(counts).reduce((a,b)=>a+b,0);
   const comp=Compliance.summary({days:90});
   const noRate=db.assets.filter(a=>DB.num(a.hourlyCost)===null).length;
+  const noType=db.assets.filter(a=>!a.type||!String(a.type).trim()).length;
   return `
   <h1 class="page">Settings</h1>
   <p class="sub">Signed in as <b>${esc(s.who)}</b> · ${esc(ROLE_LABEL[s.role]||s.role)}</p>
@@ -2156,12 +2487,14 @@ function renderSettings(){
       Object.entries(counts).map(([k,v])=>({id:k,k,v})))}
     <div class="note">${total} record${total===1?'':'s'} total ·
       <a href="#/compliance">${comp.pct===null?'no':comp.pct+'%'} PM compliance over 90 days</a>.
-      ${noRate?`<br>${noRate} item${noRate===1?'':'s'} of equipment have no hourly downtime cost set.`:''}</div></div>
+      ${noType?`<br>${noType} item${noType===1?'':'s'} of equipment have no type, so they use the
+      standard cause lists. <a href="#/causes">Cause setup</a>.`:''}
+      ${noRate?`<br>${noRate} item${noRate===1?'':'s'} have no hourly downtime cost set.`:''}</div></div>
   <div class="card"><h3 class="sec">Backup and sample data</h3>
     <div class="actions">
       <button class="btn filled" onclick="Backup.export()">Download backup</button>
       <button class="btn out" onclick="exportCompliance()">Export PM compliance</button>
-      <button class="btn out" onclick="exportStops()">Export downtime</button>
+      <button class="btn out" onclick="exportStops()">Export production loss</button>
       <button class="btn out" onclick="migrateUp()" ${s.mode==='cloud'?'':'disabled'}>Upload this device's data</button>
       <button class="btn out" onclick="seedSample()">Load sample data</button></div>
     <div class="note"><b>Upload this device's data</b> pushes anything saved only in this
@@ -2182,7 +2515,7 @@ function reconnect(){
 
 function migrateUp(){
   const db=DB.raw();
-  const n=db.assets.length+db.pms.length+db.parts.length+db.wos.length+db.pmlogs.length+db.stops.length;
+  const n=DB.LISTS.reduce((t,k)=>t+(db[k]||[]).length,0);
   if(!n){toast('Nothing on this device to upload');return;}
   confirmDelete(`Upload ${n} records into the shared database?\n\nRecords with the same ID are merged, not duplicated.`,()=>{
     toast('Uploading…');
@@ -2200,11 +2533,26 @@ function seedSample(){
   const me=DB.getWho();
   const ago=n=>Stops.minutesAgo(n);
   DB.bulkUpsert('assets',[
-    {id:'3526',name:'Top Roll Assembly',manufacturer:'3Con',model:'TR-900',project:'3527',
+    {id:'3526',name:'Top Roll Assembly',type:'Ultrasonic welder',
+      manufacturer:'3Con',model:'TR-900',project:'3527',
       location:'Ultrasonic weld cell',status:'Active',owner:me,hourlyCost:'850',
       manualUrl:'https://example.com/manuals/3526-top-roll.pdf'},
-    {id:'3527',name:'Air Compressor #1',manufacturer:'Atlas Copco',model:'GA22',
+    {id:'3530',name:'Top Roll Assembly #2',type:'Ultrasonic welder',
+      manufacturer:'3Con',model:'TR-900',location:'Weld cell 2',
+      status:'Active',owner:me,hourlyCost:'850'},
+    {id:'3527',name:'Air Compressor #1',type:'Air compressor',
+      manufacturer:'Atlas Copco',model:'GA22',
       location:'Utilities room',status:'Active',owner:me,hourlyCost:'400'}]);
+  /* A couple of configured reasons so the setup screen is not empty,
+     while other types still show the fallback. */
+  DB.bulkUpsert('causes',[
+    {id:'CZ-1001',kind:'downtime',equipType:'Ultrasonic welder',label:'Sonotrode cracked',sort:'10'},
+    {id:'CZ-1002',kind:'downtime',equipType:'Ultrasonic welder',label:'Horn out of tune',sort:'20'},
+    {id:'CZ-1003',kind:'downtime',equipType:'Ultrasonic welder',label:'Anvil buildup',sort:'30'},
+    {id:'CZ-1004',kind:'downtime',equipType:'',label:'Waiting on parts',sort:'90'},
+    {id:'CZ-1005',kind:'defect',equipType:'Ultrasonic welder',label:'Weld pull test failed',sort:'10'},
+    {id:'CZ-1006',kind:'defect',equipType:'Ultrasonic welder',label:'Burn-through',sort:'20'},
+    {id:'CZ-1007',kind:'failure',equipType:'Ultrasonic welder',label:'Sonotrode wear',sort:'10'}]);
   DB.bulkUpsert('pms',[
     {id:'PM-003',assetId:'3526',description:'Inspect and clean sonotrodes/anvils; check weld quality',
       frequency:'weekly',nextDue:plus(2),tech:me,lastDone:back(5)},
@@ -2214,11 +2562,14 @@ function seedSample(){
       frequency:'monthly',nextDue:back(12),tech:me,lastDone:back(42)},
     {id:'PM-007',assetId:'3527',description:'Inspect compressor cooler and drain traps',
       frequency:'quarterly',nextDue:plus(30)}]);
+  /* The sonotrode fits both weld cells — one stock figure, two machines. */
   DB.bulkUpsert('parts',[
-    {id:'CT_12672',description:'Sonotrode',assetId:'3526',mfrPn:'6821000797',vendor:'3CON',location:'SP1-I2-B5'},
-    {id:'CT_1710',description:'Ultrasonic generator',assetId:'3526',mfrPn:'88194',vendor:'HERRMANN',location:'SP1-E3-B22'},
-    {id:'P-1001',description:'Compressor oil filter',assetId:'3527',mfrPn:'GRA-4471',vendor:'Grainger',
-      location:'SP1-A1-B2',qty:'12',min:'5',cost:'38.50'}]);
+    Object.assign({id:'CT_12672',description:'Sonotrode',mfrPn:'6821000797',vendor:'3CON',
+      location:'SP1-I2-B5',qty:'4',min:'2',cost:'420'},DB.partAssetFields(['3526','3530'])),
+    Object.assign({id:'CT_1710',description:'Ultrasonic generator',mfrPn:'88194',vendor:'HERRMANN',
+      location:'SP1-E3-B22',qty:'1',min:'1',cost:'2800'},DB.partAssetFields(['3526','3530'])),
+    Object.assign({id:'P-1001',description:'Compressor oil filter',mfrPn:'GRA-4471',vendor:'Grainger',
+      location:'SP1-A1-B2',qty:'12',min:'5',cost:'38.50'},DB.partAssetFields(['3527']))]);
   DB.bulkUpsert('pmlogs',[
     {id:'PMC-00001',pmId:'PM-003',assetId:'3526',description:'Inspect and clean sonotrodes/anvils; check weld quality',
       frequency:'weekly',dueDate:back(5),doneDate:back(5),daysLate:0,by:me,hours:'0.5',
@@ -2229,39 +2580,45 @@ function seedSample(){
     {id:'PMC-00003',pmId:'PM-004',assetId:'3526',description:'Clean/replace main air supply filters',
       frequency:'monthly',dueDate:back(21),doneDate:back(21),daysLate:0,by:me,hours:'1',
       notes:'Replaced both element filters, drained separator.'}]);
+  /* A spread across the windows so the high-defect ranking has
+     something to show: 3530 bad recently, 3526 bad earlier. */
   DB.bulkUpsert('stops',[
-    {id:'EV-00001',kind:'downtime',assetId:'3526',reason:'Electrical fault',
+    {id:'EV-00001',kind:'downtime',assetId:'3526',reason:'Sonotrode cracked',
       startedAt:ago(300),endedAt:ago(180),by:me,closedBy:me,
       detail:'Machine faulted mid-cycle, drive showed an overcurrent alarm.',
       fixedBy:'Reset the drive and reseated the encoder plug — it was backed out. Ran clean after.'},
-    {id:'EV-00002',kind:'defect',assetId:'3526',reason:'Weld quality',
-      startedAt:ago(1500),endedAt:ago(1440),qty:'14',by:me,closedBy:me,
+    {id:'EV-00002',kind:'defect',assetId:'3530',reason:'Weld pull test failed',qty:'26',
+      startedAt:ago(60*24*2),endedAt:ago(60*24*2-45),by:me,closedBy:me,
       detail:'Pull tests failing on station 2, parts going to scrap.',
       fixedBy:'Anvil had material buildup. Cleaned both faces and reset trigger pressure to 3.2 bar.'},
-    {id:'EV-00003',kind:'downtime',assetId:'3527',reason:'Mechanical failure',
-      startedAt:ago(2800),endedAt:ago(2620),by:me,closedBy:me,
-      detail:'Compressor tripped and would not restart.',
-      fixedBy:'Head gasket blown. Replaced gasket and torqued to 32 Nm in sequence.'},
-    {id:'EV-00004',kind:'downtime',assetId:'3526',reason:'Electrical fault',
-      startedAt:ago(5200),endedAt:ago(5100),by:me,closedBy:me,
-      detail:'Same overcurrent alarm as before.',
-      fixedBy:'Encoder plug again. Cable-tied the loom so it cannot work loose.'},
-    {id:'EV-00005',kind:'downtime',assetId:'3526',reason:'Electrical fault',
-      startedAt:ago(9000),endedAt:ago(8880),by:me,closedBy:me,
-      detail:'Drive alarm, third time this quarter.',
-      fixedBy:'Reseated encoder plug. Needs a proper connector — raised a work order.'},
-    {id:'EV-00006',kind:'downtime',assetId:'3527',reason:'Waiting on parts',
+    {id:'EV-00003',kind:'defect',assetId:'3530',reason:'Burn-through',qty:'14',
+      startedAt:ago(60*24*5),endedAt:ago(60*24*5-30),by:me,closedBy:me,
+      detail:'Scorching on the B-side trim.',
+      fixedBy:'Weld time down 0.1s, amplitude down 5%. Ran a sample of 20, all good.'},
+    {id:'EV-00004',kind:'defect',assetId:'3526',reason:'Weld pull test failed',qty:'40',
+      startedAt:ago(60*24*70),endedAt:ago(60*24*70-90),by:me,closedBy:me,
+      detail:'Whole shift of suspect welds.',
+      fixedBy:'Generator drifting. Swapped CT_1710 and re-tuned the stack.'},
+    {id:'EV-00005',kind:'downtime',assetId:'3526',reason:'Sonotrode cracked',
+      startedAt:ago(60*24*40),endedAt:ago(60*24*40-120),by:me,closedBy:me,
+      detail:'Third time this quarter.',
+      fixedBy:'Replaced sonotrode from CT_12672 stock. Needs a root-cause look.'},
+    {id:'EV-00006',kind:'downtime',assetId:'3526',reason:'Sonotrode cracked',
+      startedAt:ago(60*24*80),endedAt:ago(60*24*80-100),by:me,closedBy:me,
+      detail:'Cracked face again.',
+      fixedBy:'Replaced sonotrode. Torque on the stack was low — retorqued to 45 Nm.'},
+    {id:'EV-00007',kind:'downtime',assetId:'3527',reason:'Waiting on parts',
       startedAt:ago(45),endedAt:'',by:me,
       detail:'Oil filter split, no spare in the crib.'}]);
   DB.bulkUpsert('wos',[
     {id:'WO-1002',assetId:'3526',description:'Replace worn sonotrode on station 2',type:'Repair',
       priority:'Medium',requestedBy:me,assignedTo:me,
       dateRequested:back(22),dateCompleted:back(21),hours:'2.5',cost:'1250',
-      status:'Completed',cause:'Wear / end of life',partsUsed:'CT_12672',
+      status:'Completed',cause:'Sonotrode wear',partsUsed:'CT_12672',
       notes:'Sonotrode face pitted. Swapped in CT_12672, retorqued stack to 45 Nm.'},
-    {id:'WO-1003',assetId:'3526',description:'Fit a locking connector to the encoder cable',
+    {id:'WO-1003',assetId:'3526',description:'Root-cause the repeat sonotrode cracking',
       type:'Improvement',priority:'High',requestedBy:me,
-      dateRequested:back(2),dateDue:plus(3),status:'Open',cause:'To be determined'}]);
+      dateRequested:back(2),dateDue:plus(3),status:'Open',cause:Causes.TBD}]);
   route();
   toast('Sample data loaded');}
 
@@ -2285,7 +2642,7 @@ function seedSample(){
       DB.refresh().then(()=>route()).catch(()=>{});}});
   window.addEventListener('online',()=>{
     if(DB.status().mode!=='cloud')reconnect();});
-  /* Open stoppages count up live. */
+  /* Open losses count up live. */
   setInterval(()=>{
     if(document.hidden)return;
     if(typeof Stops==='undefined'||!Stops.open().length)return;

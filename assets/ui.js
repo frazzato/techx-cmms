@@ -58,7 +58,10 @@ const F={
       <input id="f_${name}" name="${name}" type="${opts.type||'text'}" value="${esc(val??'')}"
         ${opts.readonly?'readonly':''} ${opts.placeholder?`placeholder="${esc(opts.placeholder)}"`:''}
         ${opts.autocomplete?`autocomplete="${opts.autocomplete}"`:''}
+        ${opts.list?`list="${esc(opts.list)}"`:''}
         ${opts.oninput?`oninput="${opts.oninput}"`:''}/>
+      ${opts.datalist?`<datalist id="${esc(opts.list)}">${
+        opts.datalist.map(v=>`<option value="${esc(v)}"></option>`).join('')}</datalist>`:''}
       ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
   num(name,label,val,opts={}){
     return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
@@ -78,7 +81,7 @@ const F={
       const v=typeof x==='string'?x:x.v,t=typeof x==='string'?x:x.t;
       return `<option value="${esc(v)}" ${String(val??'')===String(v)?'selected':''}>${esc(t)}</option>`;
     }).join('');
-    return `<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>
+    return `${label?`<label class="${opts.required?'req':''}" for="f_${name}">${esc(label)}</label>`:''}
       <select id="f_${name}" name="${name}" ${opts.onchange?`onchange="${opts.onchange}"`:''}>${o}</select>
       ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
   person(name,label,val,opts={}){
@@ -99,15 +102,60 @@ const F={
         ${opts.placeholder?`placeholder="${esc(opts.placeholder)}"`:''}
         ${opts.oninput?`oninput="${opts.oninput}"`:''}>${esc(val??'')}</textarea>
       ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
+  /* A checkbox list with a filter box. Used where one record can
+     point at several others — a spare part fitting many machines.
+     A native multi-select is close to unusable on a phone. */
+  checks(name,label,selected,options,opts={}){
+    const sel=new Set((selected||[]).map(String));
+    const rows=options.map(o=>{
+      const v=typeof o==='string'?o:o.v;
+      const t=typeof o==='string'?o:o.t;
+      const sub=typeof o==='object'&&o.sub?o.sub:'';
+      return `<label class="chk" data-search="${esc((t+' '+sub).toLowerCase())}">
+        <input type="checkbox" name="${name}" value="${esc(v)}" ${sel.has(String(v))?'checked':''}/>
+        <span class="chk-txt"><b>${esc(t)}</b>${sub?`<small>${esc(sub)}</small>`:''}</span>
+      </label>`;}).join('');
+    return `<label class="${opts.required?'req':''}">${esc(label)}
+        <span class="chk-count" id="cnt_${name}">${sel.size} selected</span></label>
+      ${options.length>6?`<input class="chk-filter" placeholder="Filter…"
+        oninput="filterChecks('${jsq(name)}',this.value)"/>`:''}
+      <div class="chklist" id="chk_${name}" onchange="countChecks('${jsq(name)}')">
+        ${rows||'<div class="empty" style="padding:16px">Nothing to choose from yet.</div>'}
+      </div>
+      ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
   read(){
     const out={};
-    document.querySelectorAll('#drawerBody [name]').forEach(el=>{out[el.name]=el.value.trim();});
+    /* Checkbox groups collapse to an array; everything else is a
+       single value. Reading them the same way would silently keep
+       only the last box ticked. */
+    document.querySelectorAll('#drawerBody [name]').forEach(el=>{
+      if(el.type==='checkbox'){
+        if(!Array.isArray(out[el.name]))out[el.name]=[];
+        if(el.checked)out[el.name].push(el.value);
+      }else{out[el.name]=(el.value||'').trim();}});
     return out;}
 };
+function filterChecks(name,q){
+  const box=document.getElementById('chk_'+name);
+  if(!box)return;
+  const needle=String(q||'').toLowerCase().trim();
+  box.querySelectorAll('.chk').forEach(el=>{
+    el.style.display=(!needle||(el.dataset.search||'').includes(needle))?'':'none';});}
+function countChecks(name){
+  const box=document.getElementById('chk_'+name);
+  const out=document.getElementById('cnt_'+name);
+  if(!box||!out)return;
+  const n=box.querySelectorAll('input[type=checkbox]:checked').length;
+  out.textContent=n+' selected';}
+
 /* Label says Equipment; the stored collection is still "assets". */
 function assetOptions(){
   return [{v:'',t:'— none —'}].concat(
     DB.all('assets').map(a=>({v:a.id,t:a.id+' · '+a.name})));
+}
+function assetChecklist(){
+  return DB.all('assets').map(a=>({v:a.id,t:a.id+' · '+a.name,
+    sub:[a.type,a.location].filter(Boolean).join(' · ')}));
 }
 function renderTable(cols,rows,opts={}){
   if(!rows.length)return `<div class="empty">${esc(opts.empty||'Nothing here yet.')}</div>`;
@@ -125,12 +173,6 @@ function fmtDate(iso){
   if(!iso)return '—';
   const d=new Date(iso+(String(iso).length===10?'T00:00:00':''));
   if(isNaN(d))return esc(iso);
-  return d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
-}
-function fmtDateTime(iso){
-  if(!iso)return '—';
-  const d=new Date(iso);
-  if(isNaN(d))return esc(String(iso).slice(0,10));
   return d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
 }
 /* Local "YYYY-MM-DDTHH:MM" shown as "Sep 15, 2:30 PM". */

@@ -40,6 +40,7 @@ const CSV = (() => {
   const ALIAS={
     assets:{id:['assetid','asset','assetnumber','assetno','id','equipmentid','equipmentno','equipmentnumber'],
       name:['equipmentname','assetname','name','description','equipment'],
+      type:['type','equipmenttype','assettype','machinetype','category','class'],
       manufacturer:['manufacturer','mfr','make','oem'],
       model:['model','modelnumber','modelno'],
       serial:['serialnumber','serialno','serial','serialnum','sn'],
@@ -62,9 +63,12 @@ const CSV = (() => {
       tech:['assignedtechnician','technician','assignedto','owner','tech','responsible'],
       procedureUrl:['procedure','procedureurl','procedurelink','instruction','instructionurl','worksheet','checklist','checklisturl'],
       completed:['completed','done','iscompleted']},
+    /* assetIds accepts several equipment numbers separated by a
+       semicolon, comma or pipe — one part, many machines. */
     parts:{id:['partnumber','partno','partid','id','part'],
       description:['description','partdescription','name'],
-      assetId:['assetid','asset','assetnumber','equipmentid','equipment','usedon'],
+      assetIds:['assetids','equipmentids','usedon','usedonequipment','equipment','assets','machines','fits'],
+      assetId:['assetid','asset','assetnumber','equipmentid'],
       mfrPn:['manufacturerpartnumber','mfrpn','mfgpartnumber','oempartnumber','mfrpartnumber'],
       vendor:['vendor','supplier','manufacturer','mfr'],
       location:['storagelocation','location','bin','binlocation','shelf'],
@@ -107,12 +111,17 @@ const CSV = (() => {
       reason:['reason','cause','downtimereason','defecttype','failuremode'],
       startedAt:['started','startedat','starttime','downtime','stoptime','from','begin'],
       endedAt:['ended','endedat','endtime','uptime','resumed','to','finish'],
-      qty:['quantity','qty','parts','partsaffected','piecesaffected','scrapqty'],
+      qty:['quantity','qty','parts','partsaffected','partslost','piecesaffected','scrapqty','scrap'],
       detail:['detail','details','whathappened','description','problem','notes'],
       fixedBy:['fix','fixedby','whatfixedit','resolution','correctiveaction','action','solution'],
       by:['reportedby','by','operator','who','loggedby'],
       closedBy:['closedby','resolvedby'],
-      woId:['workorder','workordernumber','wo','wonumber']}};
+      woId:['workorder','workordernumber','wo','wonumber']},
+    causes:{id:['id','recordid'],
+      kind:['kind','list','listtype'],
+      equipType:['equipmenttype','type','assettype','machinetype','appliesto'],
+      label:['label','cause','reason','text','name','description'],
+      sort:['sort','order','sequence','position']}};
   function mapHeaders(entity,headers){
     const alias=ALIAS[entity];const map={};
     headers.forEach(h=>{const n=norm(h);
