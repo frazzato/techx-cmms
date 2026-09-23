@@ -18,7 +18,7 @@ const ROLE_LABEL = { admin:'Admin', maintenance:'Maintenance' };
 const LINK_HINT = 'Paste a SharePoint or web address. Opens in a new tab — the file stays where it lives.';
 
 const VIEWS = {
-  maintenance: ['home','assets','asset','work','wo','pm','stops','parts','smart','copilot','settings','login'],
+  maintenance: ['home','assets','asset','work','wo','pm','stops','parts','smart','settings','login'],
   admin: 'all'
 };
 function canView(name){
@@ -40,7 +40,7 @@ let AN={kind:'',assets:[],days:30,metric:'mins'};
 
 const ROUTES={home:renderHome,dashboard:renderDashboard,assets:renderAssets,asset:renderAssetDetail,
   work:renderWork,pm:renderWork,wo:renderWork,
-  parts:renderParts,qr:renderQR,smart:renderSmart,copilot:renderCopilot,compliance:renderCompliance,
+  parts:renderParts,qr:renderQR,smart:renderSmart,compliance:renderCompliance,
   stops:renderStops,causes:renderCauses,
   import:renderImport,users:renderUsers,settings:renderSettings,login:renderLogin};
 
@@ -62,7 +62,7 @@ function route(){
   document.querySelectorAll('.rail .nav').forEach(a=>
     a.classList.toggle('active',a.dataset.s===navFor));
   document.getElementById('view').innerHTML=fn(param);
-  updateChrome();window.scrollTo(0,0);}
+  updateChrome();if(typeof copilotPanelRefresh==='function')copilotPanelRefresh();window.scrollTo(0,0);}
 window.addEventListener('hashchange',route);
 
 document.getElementById('globalSearch').addEventListener('input',e=>{
@@ -2848,35 +2848,79 @@ function seedSample(){
 })();
 
 
-/* Tech X Copilot — Microsoft 365 corporate endpoint */
+/* ============================================================
+   TECH X COPILOT — docked, screen-aware local assistant
+   No API required. Answers deterministic questions from CMMS data.
+   Microsoft 365 Copilot remains available for open-ended analysis.
+   ============================================================ */
 const TECHX_COPILOT_URL='https://m365.cloud.microsoft/chat';
-const COPILOT_PROMPTS=[
- ['Worst Equipment','Which piece of equipment has the highest downtime?','Analyze the current production loss data and identify the equipment with the highest downtime. Include possible root causes and recommendations.'],
- ['Repeat Failures','Which failures are occurring repeatedly?','Review production loss and maintenance events. Identify recurring failure reasons and equipment with repeated issues.'],
- ['Downtime Ranking','Rank equipment by total production loss.','Rank all equipment by production loss and downtime. Identify the largest contributors and recommended actions.'],
- ['Maintenance Priorities','What equipment should maintenance focus on today?','Based on current downtime, defects, and recent work orders, identify maintenance priorities for today.'],
- ['Weekly Report','Generate a weekly maintenance report.','Generate a weekly maintenance report including downtime, defects, recurring issues, completed work orders, and recommendations.'],
- ['Root Cause Analysis','Identify common causes and recurring issues.','Perform a root cause analysis using downtime and defect data. Identify recurring issues and improvement opportunities.']
-];
-function copilotOpen(){window.open(TECHX_COPILOT_URL,'_blank','noopener,noreferrer');}
-function copilotSnapshot(){
+let COPILOT_DOCK_OPEN=false;
+function copilotRoute(){return (location.hash||'#/home').replace('#/','').split('/')[0];}
+function copilotScreenName(){return ({home:'Home',dashboard:'Dashboard',assets:'Equipment',asset:'Equipment detail',work:'Schedule Work',wo:'Work Orders',pm:'Preventive Maintenance',stops:'Production Loss',parts:'Spare Parts',compliance:'Compliance',smart:'Smart Assist',causes:'Cause Setup'}[copilotRoute()]||'Tech X');}
+function openM365Copilot(){window.open(TECHX_COPILOT_URL,'_blank','noopener,noreferrer');}
+function toggleCopilotPanel(force){
+ const p=document.getElementById('copilotPanel'); if(!p)return;
+ COPILOT_DOCK_OPEN=typeof force==='boolean'?force:!p.classList.contains('open');
+ p.classList.toggle('open',COPILOT_DOCK_OPEN);p.setAttribute('aria-hidden',String(!COPILOT_DOCK_OPEN));
+ document.body.classList.toggle('copilot-docked',COPILOT_DOCK_OPEN);
+ if(COPILOT_DOCK_OPEN){copilotPanelRefresh();setTimeout(()=>document.getElementById('copilotPanelInput')?.focus(),100);}
+}
+function copilotFacts(){
  const assets=DB.all('assets'),wos=DB.all('wos'),parts=DB.all('parts');
- const s=Stops.summary({days:30}), ba=Stops.byAsset({days:30})[0], br=Stops.byReason({days:30})[0];
- const open=wos.filter(DB.isActive).length;
- const low=parts.filter(x=>{const q=DB.num(x.qty),m=DB.num(x.minQty);return q!==null&&m!==null&&q<=m}).length;
- return `Tech X CMMS — 30-day maintenance snapshot\nEquipment: ${assets.length}\nOpen work orders: ${open}\nProduction-loss events: ${s.count}\nDowntime: ${Stops.fmtMins(s.downMins)}\nDefect time: ${Stops.fmtMins(s.defMins)}\nParts lost: ${s.parts}\nLow-stock parts: ${low}\nHighest-loss equipment: ${ba?DB.assetName(ba.assetId)+' ('+Stops.fmtMins(ba.mins)+')':'None'}\nLeading loss cause: ${br?br.reason+' ('+Stops.fmtMins(br.mins)+')':'None'}\n\n`;
+ const s=Stops.summary({days:30}), byA=Stops.byAsset({days:30}), byR=Stops.byReason({days:30});
+ const active=wos.filter(DB.isActive), low=parts.filter(x=>{const q=DB.num(x.qty),m=DB.num(x.minQty);return q!==null&&m!==null&&q<=m});
+ const overdue=DB.all('pms').filter(p=>p.active!==false&&DB.daysUntil(p.nextDue)<0);
+ return {assets,wos,parts,s,byA,byR,active,low,overdue};
 }
-async function copilotCopy(text,context){
- const value=(context?copilotSnapshot():'')+(text||'');
- if(!value.trim()){toast('Type or choose a question first');return;}
- try{await navigator.clipboard.writeText(value)}catch(e){const t=document.createElement('textarea');t.value=value;document.body.appendChild(t);t.select();document.execCommand('copy');t.remove();}
- toast('Question copied to clipboard. Open Copilot and paste your question.');
+function copilotContextText(){
+ const f=copilotFacts(), top=f.byA[0], cause=f.byR[0];
+ return `Tech X CMMS — current ${copilotScreenName()} screen\n30-day snapshot\nEquipment: ${f.assets.length}\nOpen work orders: ${f.active.length}\nOverdue PMs: ${f.overdue.length}\nProduction-loss events: ${f.s.count}\nDowntime: ${Stops.fmtMins(f.s.downMins)}\nDefect time: ${Stops.fmtMins(f.s.defMins)}\nParts lost: ${f.s.parts}\nLow-stock parts: ${f.low.length}\nHighest-loss equipment: ${top?DB.assetName(top.assetId)+' — '+Stops.fmtMins(top.mins):'None'}\nLeading cause: ${cause?cause.reason+' — '+Stops.fmtMins(cause.mins):'None'}`;
 }
-function copilotSelect(i){const x=COPILOT_PROMPTS[i],el=document.getElementById('copilotInput');if(el){el.value=x[2];el.focus();}}
-function renderCopilot(){return `<h1 class="page">&#128161; Tech X Copilot</h1>
-<p class="sub">Maintenance intelligence workspace connected to your approved Microsoft 365 Copilot.</p>
-<section class="copilot-hero"><div><b>MAINTENANCE INTELLIGENCE</b><h2>Investigate faster. Ask better questions.</h2><p>Prepare questions about equipment, downtime, defects, production loss, work orders, spare parts, and maintenance trends.</p></div><span class="chip">Microsoft 365 approved link</span></section>
-<div class="copilot-layout"><section class="card copilot-chat"><h3>Tech X Copilot Chat</h3><div class="copilot-messages"><div class="copilot-msg"><b>Tech X Copilot</b><p>Choose a suggested investigation or type your own question. Copy it with the live CMMS snapshot, then open Microsoft 365 Copilot.</p></div></div><textarea id="copilotInput" rows="4" placeholder="Ask about downtime, failures, work orders, spare parts..."></textarea><div class="actions"><button class="btn out" onclick="copilotCopy(document.getElementById('copilotInput').value,false)">Copy question</button><button class="btn out" onclick="copilotCopy(document.getElementById('copilotInput').value,true)">Copy with CMMS snapshot</button><button class="btn filled" onclick="copilotOpen()">Open Microsoft 365 Copilot &#8599;</button></div></section>
-<aside class="card copilot-guide"><h3>How it works</h3><ol><li>Choose or type a question.</li><li>Copy it with the CMMS snapshot.</li><li>Open Microsoft 365 Copilot.</li><li>Paste and review the response.</li><li>Validate findings before acting.</li></ol><div class="note"><b>Privacy:</b> Follow company policy. Do not paste confidential or restricted information.</div></aside></div>
-<h2>Suggested Questions</h2><div class="copilot-grid">${COPILOT_PROMPTS.map((x,i)=>`<button class="copilot-prompt" onclick="copilotSelect(${i})"><b>${esc(x[0])}</b><span>${esc(x[1])}</span><em>Use prompt &#8594;</em></button>`).join('')}</div>
-<section class="copilot-open"><div><h2>&#128640; Open Microsoft 365 Copilot</h2><p>Launch the company-approved Microsoft 365 Copilot chat.</p></div><button onclick="copilotOpen()">Launch Copilot &#8599;</button></section>`;}
+function copilotPanelPrompts(){
+ const r=copilotRoute();
+ if(r==='assets'||r==='asset')return ['Which equipment is worst?','Show equipment with open work orders','What should we inspect first?'];
+ if(r==='stops'||r==='dashboard')return ['Rank downtime by equipment','What causes repeat most?','Summarize the last 30 days'];
+ if(r==='work'||r==='wo'||r==='pm')return ['What work is open?','Which PMs are overdue?','What should maintenance do today?'];
+ if(r==='parts')return ['Which parts are low stock?','What parts should we monitor?','Summarize parts risk'];
+ return ['What should maintenance focus on today?','Which equipment is worst?','Summarize the last 30 days'];
+}
+function copilotPanelRefresh(){
+ const scope=document.getElementById('copilotPanelScope'), prompts=document.getElementById('copilotPanelPrompts');
+ if(scope)scope.innerHTML=`Using <b>${esc(copilotScreenName())}</b> + current CMMS data`;
+ if(prompts)prompts.innerHTML=copilotPanelPrompts().map(q=>`<button onclick="copilotPanelAsk('${jsq(q)}')">${esc(q)}</button>`).join('');
+ const box=document.getElementById('copilotPanelMessages');
+ if(box&&!box.children.length)copilotPanelMsg('assistant',`I can analyze the ${copilotScreenName()} screen and the current Tech X records. Ask a question below.`);
+}
+function copilotPanelMsg(role,text){
+ const box=document.getElementById('copilotPanelMessages');if(!box)return;
+ const d=document.createElement('div');d.className='copilot-panel-msg '+role;
+ d.innerHTML=`<b>${role==='user'?'You':'Tech X Copilot'}</b><div>${esc(text).replace(/\n/g,'<br>')}</div>`;
+ box.appendChild(d);box.scrollTop=box.scrollHeight;
+}
+function copilotLocalAnswer(q){
+ const f=copilotFacts(), s=q.toLowerCase(), top=f.byA[0], causes=f.byR.slice(0,3);
+ if(/worst|highest|rank.*equipment|most downtime/.test(s)){
+  if(!f.byA.length)return 'No closed production-loss records were found in the last 30 days.';
+  return f.byA.slice(0,5).map((x,i)=>`${i+1}. ${DB.assetName(x.assetId)} — ${Stops.fmtMins(x.mins)}, ${x.parts||0} parts lost`).join('\n');
+ }
+ if(/cause|repeat|root/.test(s)){
+  if(!causes.length)return 'No recorded loss causes were found in the last 30 days.';
+  return 'Leading recorded causes:\n'+causes.map((x,i)=>`${i+1}. ${x.reason} — ${x.count} event(s), ${Stops.fmtMins(x.mins)}`).join('\n')+'\n\nUse the event history and technician notes before confirming root cause.';
+ }
+ if(/work order|work is open|maintenance do|priorit/.test(s)){
+  if(!f.active.length)return 'There are no active work orders.';
+  return `${f.active.length} active work order(s). Prioritize High priority first, then equipment with recent production loss.\n`+f.active.slice(0,5).map(w=>`• ${w.id}: ${w.title||w.problem||'Work order'} — ${w.priority||'No priority'} — ${DB.assetName(w.assetId)}`).join('\n');
+ }
+ if(/pm|overdue|preventive/.test(s))return f.overdue.length?`${f.overdue.length} PM(s) are overdue:\n`+f.overdue.slice(0,8).map(p=>`• ${p.title||p.task||p.id} — ${DB.assetName(p.assetId)} — due ${p.nextDue||'not set'}`).join('\n'):'No active PMs are overdue.';
+ if(/part|stock|inventory/.test(s))return f.low.length?`${f.low.length} part(s) are at or below minimum:\n`+f.low.slice(0,8).map(p=>`• ${p.name||p.id}: ${p.qty||0} on hand, minimum ${p.minQty||0}`).join('\n'):'No parts are at or below their recorded minimum.';
+ if(/summary|30 day|today|focus/.test(s))return copilotContextText()+(top?'\n\nRecommended first review: '+DB.assetName(top.assetId)+' because it has the highest recorded loss.':'');
+ return `I can answer from Tech X records about equipment ranking, downtime causes, open work orders, overdue PMs, and low-stock parts. For a broader question, use “Open Microsoft 365 Copilot” and include the Tech X context.`;
+}
+function copilotPanelAsk(preset){
+ const input=document.getElementById('copilotPanelInput'),q=(preset||input?.value||'').trim();if(!q)return;
+ copilotPanelMsg('user',q);if(input)input.value='';
+ setTimeout(()=>copilotPanelMsg('assistant',copilotLocalAnswer(q)),120);
+}
+async function copilotCopyContext(){
+ try{await navigator.clipboard.writeText(copilotContextText());toast('Tech X context copied');}catch(e){toast('Could not copy context');}
+}
