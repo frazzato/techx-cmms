@@ -12,22 +12,25 @@
      assets  — equipment (label changed, storage key did not)
      pms, parts, wos
      pmlogs  — PM completion history (append-only)
-     stops   — downtime and defect events
+     stops   — production loss events (downtime and defects)
+     causes  — the reason lists an admin configures per equipment type
 
-   pmlogs is append-only on purpose. Storing history as an array
-   inside each PM would lose entries: the jsonb merge REPLACES a
-   key rather than appending, so two people completing PMs at the
-   same time would clobber each other. An audit trail cannot work
-   that way. One row per completion, never updated.
-
-   Stoppages are NOT append-only — an open stoppage must stay
-   editable so somebody can close it when the machine runs again.
+   ROLES AND VISIBILITY
+   Which SCREENS a role can open is a front-end decision. The API
+   returns the same data to every signed-in user, because a
+   technician at a machine needs its full history to do the job.
+   What the API enforces is WRITES: delete, import, cause setup and
+   user management are admin-only, and completion records can never
+   be rewritten by anyone.
    ============================================================ */
 
 import crypto from 'node:crypto';
 
-const COLLECTIONS = ['assets', 'pms', 'parts', 'wos', 'pmlogs', 'stops'];
+const COLLECTIONS = ['assets', 'pms', 'parts', 'wos', 'pmlogs', 'stops', 'causes'];
 const APPEND_ONLY = ['pmlogs'];
+/* Setup data, not day-to-day work. A technician logging a stoppage
+   must not be able to rewrite the list of reasons underneath it. */
+const ADMIN_WRITE = ['causes'];
 const ROLES = ['maintenance', 'admin'];
 const SESSION_DAYS = 30;
 const PBKDF2_ROUNDS = 210000;
@@ -142,7 +145,7 @@ async function readAll(sql) {
   const rows = await sql`
     SELECT collection, id, data, updated_by, updated_at
     FROM records WHERE deleted = false ORDER BY collection, id`;
-  const out = { assets: [], pms: [], parts: [], wos: [], pmlogs: [], stops: [] };
+  const out = { assets: [], pms: [], parts: [], wos: [], pmlogs: [], stops: [], causes: [] };
   rows.forEach(r => {
     /* updated_by comes from the session, so it cannot be spoofed. */
     if (out[r.collection]) out[r.collection].push(Object.assign({}, r.data, {
@@ -172,7 +175,8 @@ export default async function handler(req, res) {
       hasDatabaseUrl: !!process.env.DATABASE_URL,
       hasAdminUsername: !!process.env.ADMIN_USERNAME,
       hasAdminPassword: !!process.env.ADMIN_PASSWORD,
-      driverLoads: false, databaseReachable: false, tablesReady: false, userCount: null };
+      driverLoads: false, databaseReachable: false, tablesReady: false,
+      userCount: null, recordCounts: null };
     try {
       await getNeon(); out.driverLoads = true;
       const sql = await connect();
@@ -182,6 +186,14 @@ export default async function handler(req, res) {
       await ensureFoundingAdmin(sql);
       const c = await sql`SELECT COUNT(*)::int AS n FROM users`;
       out.userCount = c[0].n;
+      /* Record counts per collection, so "why can nobody see the
+         equipment" can be answered from a browser without opening a
+         SQL console. Counts only — no record content. */
+      const counts = await sql`
+        SELECT collection, COUNT(*)::int AS n FROM records
+        WHERE deleted = false GROUP BY collection ORDER BY collection`;
+      out.recordCounts = {};
+      counts.forEach(r => { out.recordCounts[r.collection] = r.n; });
     } catch (e) { out.ok = false; out.error = e.message; out.errorCode = e.code || null; }
     return res.status(200).json(out);
   }
@@ -265,6 +277,10 @@ export default async function handler(req, res) {
         const { collection, record } = body;
         if (!COLLECTIONS.includes(collection)) return res.status(400).json({ error: 'Unknown collection' });
         if (!record || !record.id) return res.status(400).json({ error: 'Record needs an id' });
+
+        /* Setup data is admin-only. */
+        if (ADMIN_WRITE.includes(collection) && !isAdmin(me))
+          return res.status(403).json({ error: 'Only an admin can change the cause lists' });
 
         /* An audit record is written once and never rewritten. */
         if (APPEND_ONLY.includes(collection)) {
