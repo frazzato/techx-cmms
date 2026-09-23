@@ -6,13 +6,12 @@
      downtime — the machine itself stopped
      defect   — it ran but made bad parts
 
-   A defect also carries a PARTS count, so a loss has two costs:
-   time lost and parts lost. Some defects cost little time but
-   scrap a whole bin, and a report that only counts minutes misses
-   those entirely.
+   A loss carries TWO costs: minutes and parts. Some defects cost
+   little time but scrap a whole bin, and a report counting only
+   minutes misses those entirely.
 
-   The reason lists come from Causes, configured per equipment
-   type by an admin, falling back to a built-in list.
+   Reasons come from Causes, which now scopes them plant-wide, by
+   equipment type, or to named machines.
 
    TIME HANDLING: stored as plain local strings "YYYY-MM-DDTHH:MM",
    exactly as the clock on the wall reads. No UTC conversion — one
@@ -23,25 +22,18 @@ const Stops = (() => {
   const KINDS = {
     downtime:{label:'Downtime',sub:'The machine stopped',icon:'&#9888;'},
     defect:{label:'Defect',sub:'Bad parts produced',icon:'&#128683;'}};
-
-  /* The windows the reports offer. */
   const WINDOWS = [7,30,60,90];
-
   /* Open records older than this are almost certainly forgotten
      rather than genuinely still running. Left uncounted they
      quietly destroy every total on the screen. */
   const STALE_HOURS = 24;
 
-  /* Reasons now live in Causes. These wrappers keep the rest of the
-     app from caring where they came from. */
   function reasonsFor(kind,assetId){
     if(typeof Causes==='undefined')return[];
     return Causes.forEquipment(kind==='defect'?'defect':'downtime',assetId);}
   function reasonOptions(kind,assetId,current,opts){
     if(typeof Causes==='undefined')return[];
-    const a=DB.get('assets',assetId);
-    return Causes.options(kind==='defect'?'defect':'downtime',
-      a&&a.type?a.type:'',current,opts||{});}
+    return Causes.options(kind==='defect'?'defect':'downtime',assetId,current,opts||{});}
 
   function nowLocal(){
     const d=new Date();
@@ -80,8 +72,6 @@ const Stops = (() => {
     const d=Math.floor(h/24),rh=h%24;
     return rh?d+'d '+rh+'h':d+'d';}
   const partsOf=s=>DB.num(s.qty)||0;
-  /* Only computed when the equipment carries an hourly cost. A
-     made-up rate is worse than no number. */
   function cost(stop){
     const a=DB.get('assets',stop.assetId);
     const rate=a?DB.num(a.hourlyCost):null;
@@ -102,13 +92,22 @@ const Stops = (() => {
     return all().filter(s=>s.assetId===assetId)
       .sort((a,b)=>(b.startedAt||'').localeCompare(a.startedAt||''));}
 
+  /* assetIds accepts an array so a report can cover several chosen
+     machines; assetId stays for the single-machine case. */
+  function matchAssets(rows,opts){
+    const one=String(opts.assetId||'').trim();
+    const many=(opts.assetIds||[]).map(x=>String(x||'').trim()).filter(Boolean);
+    if(many.length)return rows.filter(s=>many.includes(s.assetId));
+    if(one)return rows.filter(s=>s.assetId===one);
+    return rows;}
+
   function summary(opts={}){
-    const {days=30,assetId='',kind=''}=opts;
+    const {days=30,kind=''}=opts;
     /* Cut on the exact minute, not the calendar day — comparing only
        dates made "last 1 day" reach back as far as 48 hours. */
     const cutLocal=minutesAgo(days*24*60);
     let rows=all().filter(s=>(s.startedAt||'')>=cutLocal);
-    if(assetId)rows=rows.filter(s=>s.assetId===assetId);
+    rows=matchAssets(rows,opts);
     if(kind)rows=rows.filter(s=>s.kind===kind);
     /* Closed records only for totals. Open ones are still running and
        stale ones are untrustworthy — both reported separately. */
@@ -120,23 +119,22 @@ const Stops = (() => {
     const defMins=closed.filter(r=>r.kind==='defect').reduce((s,r)=>s+(minutes(r)||0),0);
     let money=0,haveCost=false;
     closed.forEach(r=>{const c=cost(r);if(c!==null){money+=c;haveCost=true;}});
-    /* Parts lost is the other half of the cost. Counted on every
-       record that carries a quantity, not only defects, because a
-       jam can scrap parts too. */
     const parts=closed.reduce((s,r)=>s+partsOf(r),0);
     const defectParts=closed.filter(r=>r.kind==='defect').reduce((s,r)=>s+partsOf(r),0);
+    const downParts=closed.filter(r=>r.kind!=='defect').reduce((s,r)=>s+partsOf(r),0);
     const defectEvents=closed.filter(r=>r.kind==='defect').length;
+    const downEvents=closed.filter(r=>r.kind!=='defect').length;
     const documented=closed.filter(r=>r.fixedBy&&r.fixedBy.trim().length>=5).length;
     return{days,rows,closed,open:openRows,stale,
       count:rows.length,closedCount:closed.length,
       openCount:openRows.length,staleCount:stale.length,
       mins,downMins,defMins,hours:mins/60,
       cost:haveCost?money:null,
-      parts,defectParts,defectEvents,defectQty:defectParts,documented,
+      parts,defectParts,downParts,defectEvents,downEvents,
+      defectQty:defectParts,documented,
       docPct:closed.length?Math.round((documented/closed.length)*100):0};}
 
-  /* Sorted by minutes, not count. Twelve two-minute jams matter less
-     than one six-hour electrical fault. Parts carried alongside so a
+  /* Sorted by minutes, not count. Parts carried alongside so a
      high-scrap reason is visible even when it costs little time. */
   function byReason(opts={}){
     const s=summary(opts);
@@ -154,57 +152,113 @@ const Stops = (() => {
       e.cumPct=total?Math.round((running/total)*100):0;});
     return out;}
 
+  /* Defect causes ranked by PARTS rather than minutes — for a defect
+     the scrap count is the cost, and ranking by time would bury a
+     five-minute fault that filled a bin. */
+  function defectByReason(opts={}){
+    const s=summary(Object.assign({},opts,{kind:'defect'}));
+    const map=new Map();
+    s.closed.forEach(r=>{
+      const key=r.reason||'Not recorded';
+      if(!map.has(key))map.set(key,{reason:key,count:0,parts:0,mins:0});
+      const e=map.get(key);e.count++;e.parts+=partsOf(r);e.mins+=minutes(r)||0;});
+    const out=Array.from(map.values()).sort((a,b)=>b.parts-a.parts||b.count-a.count);
+    const total=out.reduce((t,e)=>t+e.parts,0);
+    let run=0;
+    out.forEach(e=>{
+      e.pct=total?Math.round((e.parts/total)*100):0;
+      run+=e.parts;
+      e.cumPct=total?Math.round((run/total)*100):0;});
+    return out;}
+
   function byAsset(opts={}){
     const s=summary(opts);
     const map=new Map();
     s.closed.forEach(r=>{
       if(!r.assetId)return;
       if(!map.has(r.assetId))map.set(r.assetId,
-        {assetId:r.assetId,count:0,mins:0,down:0,defect:0,parts:0,defectEvents:0});
+        {assetId:r.assetId,count:0,mins:0,down:0,defect:0,parts:0,
+         defectParts:0,defectEvents:0,downEvents:0});
       const e=map.get(r.assetId);
       e.count++;
-      const m=minutes(r)||0;
-      e.mins+=m;
-      e.parts+=partsOf(r);
-      if(r.kind==='defect'){e.defect+=m;e.defectEvents++;}else e.down+=m;});
+      const m=minutes(r)||0, q=partsOf(r);
+      e.mins+=m;e.parts+=q;
+      if(r.kind==='defect'){e.defect+=m;e.defectParts+=q;e.defectEvents++;}
+      else{e.down+=m;e.downEvents++;}});
     return Array.from(map.values()).sort((a,b)=>b.mins-a.mins);}
 
-  /* ---------- high defect machines ----------
-     Every window at once — 7, 30, 60 and 90 days side by side. One
-     window on its own cannot tell a machine that has always been bad
-     from one that went bad last week, and that is the whole question
-     when deciding what to look at next. */
-  function defectRanking(opts={}){
-    const windows=opts.windows||WINDOWS;
-    const rank=new Map();
-    windows.forEach(days=>{
-      const s=summary({days,kind:'defect'});
-      s.closed.forEach(r=>{
-        if(!r.assetId)return;
-        if(!rank.has(r.assetId)){
-          const row={assetId:r.assetId,w:{}};
-          windows.forEach(d=>{row.w[d]={events:0,parts:0,mins:0};});
-          rank.set(r.assetId,row);}
-        const cell=rank.get(r.assetId).w[days];
-        cell.events++;
-        cell.parts+=partsOf(r);
-        cell.mins+=minutes(r)||0;});});
-    const longest=windows[windows.length-1];
-    return Array.from(rank.values())
-      /* Ranked on the longest window so the order does not jump about
-         when reading across; parts break the tie because scrap is the
-         point of a defect report. */
-      .sort((a,b)=>(b.w[longest].parts-a.w[longest].parts)||
-                   (b.w[longest].events-a.w[longest].events)||
-                   (b.w[longest].mins-a.w[longest].mins));}
+  /* ---------- trend over time ----------
+     One bucket per day, including days with nothing, so a gap in the
+     chart reads as a quiet day rather than a missing bar. */
+  function byDay(opts={}){
+    const days=opts.days||30;
+    const s=summary(opts);
+    const buckets=new Map();
+    const d=new Date();
+    d.setHours(0,0,0,0);
+    for(let i=days-1;i>=0;i--){
+      const x=new Date(d);
+      x.setDate(x.getDate()-i);
+      const pad=n=>String(n).padStart(2,'0');
+      const key=x.getFullYear()+'-'+pad(x.getMonth()+1)+'-'+pad(x.getDate());
+      buckets.set(key,{date:key,
+        label:pad(x.getDate())+'/'+pad(x.getMonth()+1),
+        mins:0,downMins:0,defMins:0,parts:0,events:0});}
+    s.closed.forEach(r=>{
+      const key=String(r.startedAt||'').slice(0,10);
+      const b=buckets.get(key);
+      if(!b)return;
+      const m=minutes(r)||0;
+      b.mins+=m;b.parts+=partsOf(r);b.events++;
+      if(r.kind==='defect')b.defMins+=m;else b.downMins+=m;});
+    return Array.from(buckets.values());}
 
-  /* Same for downtime, so both halves of production loss can be
-     read the same way. */
-  function downtimeRanking(opts={}){
+  /* ---------- when it happens ----------
+     Day of week × hour. A total tells you how much was lost; this
+     tells you when, which is what exposes the start-up hour, the
+     shift-handover gap, or the cell that only fails on nights.
+     Rows are Monday-first because that is how a shift pattern reads. */
+  function heatmap(opts={}){
+    const metric=opts.metric||'mins';
+    const s=summary(opts);
+    const grid=[];
+    for(let d=0;d<7;d++)grid.push(new Array(24).fill(0));
+    s.closed.forEach(r=>{
+      const dt=toDate(r.startedAt);
+      if(!dt)return;
+      /* getDay() is Sunday-first; shift so Monday is row 0. */
+      const row=(dt.getDay()+6)%7;
+      const hr=dt.getHours();
+      const v=metric==='parts'?partsOf(r):metric==='events'?1:(minutes(r)||0);
+      grid[row][hr]+=v;});
+    return grid;}
+
+  /* Which hour and which day hurt most — the words under the heatmap. */
+  function peak(opts={}){
+    const grid=heatmap(opts);
+    const DAYS=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+    let best=null;
+    const byHour=new Array(24).fill(0);
+    const byDayTotal=new Array(7).fill(0);
+    grid.forEach((row,d)=>row.forEach((v,h)=>{
+      byHour[h]+=v;byDayTotal[d]+=v;
+      if(v>0&&(!best||v>best.value))best={day:d,hour:h,value:v};}));
+    const total=byHour.reduce((a,b)=>a+b,0);
+    if(!total)return null;
+    let topHour=0,topDay=0;
+    byHour.forEach((v,i)=>{if(v>byHour[topHour])topHour=i;});
+    byDayTotal.forEach((v,i)=>{if(v>byDayTotal[topDay])topDay=i;});
+    return{cell:best,total,
+      topHour,topHourValue:byHour[topHour],topHourPct:Math.round(byHour[topHour]/total*100),
+      topDay,topDayName:DAYS[topDay],topDayValue:byDayTotal[topDay],
+      topDayPct:Math.round(byDayTotal[topDay]/total*100),
+      cellDayName:best?DAYS[best.day]:''};}
+
+  function ranking(kindFilter,metric,opts={}){
     const windows=opts.windows||WINDOWS;
     const rank=new Map();
     windows.forEach(days=>{
-      const s=summary({days,kind:'downtime'});
+      const s=summary(Object.assign({},opts,{days,kind:kindFilter}));
       s.closed.forEach(r=>{
         if(!r.assetId)return;
         if(!rank.has(r.assetId)){
@@ -212,17 +266,19 @@ const Stops = (() => {
           windows.forEach(d=>{row.w[d]={events:0,parts:0,mins:0};});
           rank.set(r.assetId,row);}
         const cell=rank.get(r.assetId).w[days];
-        cell.events++;
-        cell.parts+=partsOf(r);
-        cell.mins+=minutes(r)||0;});});
+        cell.events++;cell.parts+=partsOf(r);cell.mins+=minutes(r)||0;});});
     const longest=windows[windows.length-1];
-    return Array.from(rank.values())
-      .sort((a,b)=>(b.w[longest].mins-a.w[longest].mins)||
-                   (b.w[longest].events-a.w[longest].events));}
+    /* Ranked on the longest window so the order does not jump about
+       when reading across the columns. */
+    return Array.from(rank.values()).sort((a,b)=>
+      (b.w[longest][metric]-a.w[longest][metric])||
+      (b.w[longest].events-a.w[longest].events));}
+  const defectRanking=opts=>ranking('defect','parts',opts);
+  const downtimeRanking=opts=>ranking('downtime','mins',opts);
 
   function repeats(opts={}){
     const {days=365,minCount=3}=opts;
-    const s=summary({days});
+    const s=summary(Object.assign({},opts,{days}));
     const map=new Map();
     s.closed.forEach(r=>{
       if(!r.assetId||!r.reason)return;
@@ -275,7 +331,7 @@ const Stops = (() => {
   return{KINDS,WINDOWS,STALE_HOURS,reasonsFor,reasonOptions,
     nowLocal,minutesAgo,toDate,minutes,fmtMins,cost,partsOf,
     isOpen,isStale,all,open,recent,forAsset,
-    summary,byReason,byAsset,defectRanking,downtimeRanking,
-    repeats,lessons,exportRows,EXPORT_COLUMNS};
+    summary,byReason,defectByReason,byAsset,byDay,heatmap,peak,
+    defectRanking,downtimeRanking,repeats,lessons,exportRows,EXPORT_COLUMNS};
 })();
 if (typeof module !== 'undefined') module.exports = Stops;

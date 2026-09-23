@@ -102,9 +102,10 @@ const F={
         ${opts.placeholder?`placeholder="${esc(opts.placeholder)}"`:''}
         ${opts.oninput?`oninput="${opts.oninput}"`:''}>${esc(val??'')}</textarea>
       ${opts.hint?`<div class="hint">${opts.hint}</div>`:''}`;},
-  /* A checkbox list with a filter box. Used where one record can
-     point at several others — a spare part fitting many machines.
-     A native multi-select is close to unusable on a phone. */
+  /* A checkbox list with a filter and select-all. Used wherever one
+     record points at several others — a part fitting many machines,
+     a cause line covering a handful of cells. A native multi-select
+     is close to unusable on a phone. */
   checks(name,label,selected,options,opts={}){
     const sel=new Set((selected||[]).map(String));
     const rows=options.map(o=>{
@@ -117,8 +118,11 @@ const F={
       </label>`;}).join('');
     return `<label class="${opts.required?'req':''}">${esc(label)}
         <span class="chk-count" id="cnt_${name}">${sel.size} selected</span></label>
-      ${options.length>6?`<input class="chk-filter" placeholder="Filter…"
-        oninput="filterChecks('${jsq(name)}',this.value)"/>`:''}
+      ${options.length>5?`<div class="chk-tools">
+        <input class="chk-filter" placeholder="Filter…" oninput="filterChecks('${jsq(name)}',this.value)"/>
+        <button type="button" class="btn out sm" onclick="allChecks('${jsq(name)}',true)">All</button>
+        <button type="button" class="btn out sm" onclick="allChecks('${jsq(name)}',false)">None</button>
+      </div>`:''}
       <div class="chklist" id="chk_${name}" onchange="countChecks('${jsq(name)}')">
         ${rows||'<div class="empty" style="padding:16px">Nothing to choose from yet.</div>'}
       </div>
@@ -141,6 +145,16 @@ function filterChecks(name,q){
   const needle=String(q||'').toLowerCase().trim();
   box.querySelectorAll('.chk').forEach(el=>{
     el.style.display=(!needle||(el.dataset.search||'').includes(needle))?'':'none';});}
+/* Only touches rows the filter is currently showing, so "All" after
+   a search means "all of these", not "all of everything". */
+function allChecks(name,on){
+  const box=document.getElementById('chk_'+name);
+  if(!box)return;
+  box.querySelectorAll('.chk').forEach(row=>{
+    if(row.style.display==='none')return;
+    const cb=row.querySelector('input[type=checkbox]');
+    if(cb)cb.checked=!!on;});
+  countChecks(name);}
 function countChecks(name){
   const box=document.getElementById('chk_'+name);
   const out=document.getElementById('cnt_'+name);

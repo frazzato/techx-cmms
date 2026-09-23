@@ -86,6 +86,30 @@ h3.sec{font-size:12.5px;font-weight:500;color:var(--muted);letter-spacing:.6px;
 .loginbox{max-width:440px;width:100%;text-align:left}
 .loginbox h1{font-size:23px;font-weight:500;margin:0 0 4px;text-align:center}
 .loginbox p.sub{text-align:center;margin-bottom:18px}
+
+/* ---------- charts ---------- */
+.chart{width:100%;height:auto;display:block;overflow:visible}
+.chart rect,.chart path,.chart circle{transition:opacity .12s}
+.chart rect:hover,.chart path:hover{opacity:.82;cursor:default}
+.chart-empty{display:grid;place-items:center;color:var(--muted);font-size:13px;
+  background:var(--surf-1);border:1px dashed var(--line);border-radius:var(--r-s);
+  padding:24px;text-align:center;line-height:1.6}
+.chart-legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:12px;
+  font-size:12px;color:var(--muted);justify-content:center}
+.chart-legend i{display:inline-block;width:11px;height:11px;border-radius:3px;
+  margin-right:6px;vertical-align:-1px}
+.heat-key{display:flex;align-items:center;gap:5px;justify-content:center;
+  margin-top:10px;font-size:11px;color:var(--muted)}
+.heat-key i{display:inline-block;width:22px;height:11px;border-radius:2px}
+/* ---------- dashboard filter bar ---------- */
+.filterbar{padding:16px 20px}
+.fb-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+.fb-row:last-of-type{margin-bottom:0}
+.fb-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.6px;font-weight:600;margin-right:2px}
+.fb-now{margin-top:12px;padding-top:12px;border-top:1px solid var(--line);
+  font-size:12.5px;color:var(--pri);font-weight:600}
+
 .bigactions{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-bottom:22px}
 .bigaction{display:flex;align-items:center;gap:16px;text-align:left;
   background:var(--pri);color:#fff;border:none;border-radius:var(--r);
@@ -138,9 +162,9 @@ h3.sec{font-size:12.5px;font-weight:500;color:var(--muted);letter-spacing:.6px;
 .downrow-txt span{font-size:12.5px;color:var(--muted)}
 .quicktime{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px}
 .quicktime .fchip{font-size:12.5px;padding:8px 14px}
-/* checkbox list — one record pointing at several others */
 .chk-count{float:right;font-weight:400;color:var(--pri);text-transform:none;letter-spacing:0}
-.chk-filter{margin-bottom:8px}
+.chk-tools{display:flex;gap:8px;margin-bottom:8px;align-items:center}
+.chk-filter{flex:1}
 .chklist{border:1px solid var(--line);border-radius:var(--r-s);max-height:240px;
   overflow-y:auto;background:#fff;-webkit-overflow-scrolling:touch}
 .chk{display:flex;align-items:center;gap:12px;padding:11px 14px;cursor:pointer;
@@ -317,11 +341,14 @@ input[readonly]{background:var(--surf-2)}
 .qrfail b{display:block;font-size:12.5px;margin-bottom:3px}
 .qrfail span{color:var(--muted)}
 @media print{
-  .appbar,.rail,.hide-print,.chipset,h1.page,p.sub,.downbanner,.bigactions,.worktabs{display:none!important}
+  .appbar,.rail,.hide-print,.chipset,.filterbar,.downbanner,
+  .bigactions,.worktabs{display:none!important}
   body{background:#fff}
   .shell{display:block}
   .content{padding:0;max-width:none}
-  .card{box-shadow:none;padding:0;margin:0 0 12px}
+  .card{box-shadow:none;padding:0;margin:0 0 14px;break-inside:avoid}
+  /* SVG charts print cleanly — that is half the reason they are SVG */
+  .chart{max-width:100%}
   .tagsheet{grid-template-columns:repeat(3,1fr);gap:8px}
   .tag{border:1.5px solid #000}
   @page{margin:12mm}
@@ -360,4 +387,9 @@ input[readonly]{background:var(--surf-2)}
   .downrow .btn{width:100%}
   .worktab{padding:12px 14px}
   .chklist{max-height:200px}
+  /* The heatmap is the one chart too wide for a phone — let it
+     scroll sideways rather than shrink into unreadable slivers. */
+  .card > .chart{min-width:0}
+  .chart[viewBox^="0 0 6"],.chart[viewBox^="0 0 7"]{min-width:560px}
+  .card{overflow-x:auto}
 }

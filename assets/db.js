@@ -256,10 +256,9 @@ const DB = (() => {
     return{label:'In stock',cls:'c-done'};}
 
   /* ---------- parts fit more than one machine ----------
-     The same sonotrode can be on three weld cells. Older records
-     carry a single `assetId`; newer ones carry an `assetIds` array.
-     Everything reads through here so both shapes work and no
-     existing part has to be re-entered. */
+     Older records carry a single `assetId`; newer ones carry an
+     `assetIds` array. Everything reads through here so both shapes
+     work and no existing part has to be re-entered. */
   function partAssets(p){
     if(!p)return[];
     const out=[];
@@ -283,8 +282,6 @@ const DB = (() => {
   const isActive=w=>!['Completed','Cancelled'].includes(w.status||'Open');
   const isDone=w=>(w.status||'')==='Completed';
   const woDate=w=>w.dateDue||w.dateCompleted||w.dateRequested||'';
-  /* Parts have their own lookup because they can sit on several
-     machines; everything else has exactly one. */
   const forAsset=(c,assetId)=>c==='parts'?partsForAsset(assetId)
     :all(c).filter(r=>r.assetId===assetId);
 

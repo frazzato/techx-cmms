@@ -59,10 +59,7 @@ const Insights = (() => {
   const DISTINCTIVE=1.5, MIN_CORPUS=4;
   function sameModelSet(assetId){
     const asset=DB.get('assets',assetId);
-    if(!asset)return new Set();
-    /* Same make and model is the strongest signal; same equipment
-       TYPE is a weaker but still useful one now that types exist. */
-    if(!asset.model)return new Set();
+    if(!asset||!asset.model)return new Set();
     return new Set(DB.all('assets').filter(a=>a.id!==assetId&&a.model&&a.model===asset.model&&
       a.manufacturer===asset.manufacturer).map(a=>a.id));}
   function sameTypeSet(assetId){
@@ -94,7 +91,7 @@ const Insights = (() => {
       if(w.assetId&&w.assetId===assetId){score+=45;reasons.push('same machine');}
       else if(sameModel.has(w.assetId)){score+=22;reasons.push('same model');}
       else if(sameType.has(w.assetId)){score+=12;reasons.push('same type');}
-      if(cause&&cause!=='To be determined'&&w.cause===cause){score+=30;reasons.push('same cause');}
+      if(cause&&cause!==Causes.TBD&&w.cause===cause){score+=30;reasons.push('same cause');}
       const ageDays=ageDaysOf(w.dateCompleted||w.dateRequested);
       if(ageDays!==null){
         if(ageDays<=30)score+=8;else if(ageDays<=180)score+=4;else if(ageDays>730)score-=6;}
@@ -105,7 +102,7 @@ const Insights = (() => {
       if(s.score<25)return false;
       if(!described)return true;
       const wordMatch=s.overlap>=0.10&&(!canDiscriminate||s.bestShared>=DISTINCTIVE);
-      const causeMatch=cause&&cause!=='To be determined'&&s.wo.cause===cause;
+      const causeMatch=cause&&cause!==Causes.TBD&&s.wo.cause===cause;
       return wordMatch||causeMatch;
     }).sort((a,b)=>b.score-a.score).slice(0,limit);}
   /* Only closed records with a real fix note. An open loss has no
@@ -156,7 +153,7 @@ const Insights = (() => {
     const groups=new Map();
     DB.all('wos').filter(DB.isDone).forEach(w=>{
       const cause=(w.cause||'').trim();
-      if(!cause||cause==='To be determined'||cause==='Unknown')return;
+      if(!cause||cause===Causes.TBD||cause==='Unknown')return;
       if(!w.assetId)return;
       const when=w.dateCompleted||w.dateRequested;
       if(when){const d=new Date(when+'T00:00:00');if(!isNaN(d)&&d<cutoff)return;}
@@ -185,7 +182,7 @@ const Insights = (() => {
     const cost=done.reduce((s,w)=>s+(DB.num(w.cost)||0),0);
     const causeCount=new Map();
     done.forEach(w=>{const c=(w.cause||'').trim();
-      if(!c||c==='To be determined')return;
+      if(!c||c===Causes.TBD)return;
       causeCount.set(c,(causeCount.get(c)||0)+1);});
     const topCauses=Array.from(causeCount.entries()).map(([cause,count])=>({cause,count}))
       .sort((a,b)=>b.count-a.count);
@@ -207,7 +204,7 @@ const Insights = (() => {
   function dataQuality(){
     const done=DB.all('wos').filter(DB.isDone);
     const noNotes=done.filter(w=>!w.notes||w.notes.trim().length<15).length;
-    const usableWo=done.filter(w=>w.cause&&w.cause!=='To be determined'&&
+    const usableWo=done.filter(w=>w.cause&&w.cause!==Causes.TBD&&
       w.notes&&w.notes.trim().length>=15).length;
     const closedStops=DB.all('stops').filter(s=>s.endedAt);
     const usableStop=closedStops.filter(s=>s.fixedBy&&s.fixedBy.trim().length>=5).length;

@@ -1,18 +1,13 @@
 /* ============================================================
    app.js — router + screens
 
-   WORDING
-   The plant calls these things:
-     Schedule work   — work orders and PMs
-     Production Loss — downtime and defects
-   Those are the words on every button and menu item. The stored
-   collections keep their old keys (wos, pms, stops) because
-   renaming them would orphan every record already saved.
+   WORDING: the plant says "Schedule work" and "Production Loss".
+   The stored collections keep their old keys (wos, pms, stops)
+   because renaming them would orphan every saved record.
 
-   ROLE-BASED VIEWS
-   Maintenance sees the screens a technician needs on the floor;
-   admin sees everything. The router enforces it, not the menu —
-   hiding a nav item is cosmetic, anyone can type the address.
+   ROLE VIEWS: maintenance sees the floor screens; admin sees
+   everything. The router enforces it, not the menu — hiding a nav
+   item is cosmetic, anyone can type the address.
    ============================================================ */
 
 const FREQS = ['daily','weekly','biweekly','monthly','quarterly','semiannual','annually'];
@@ -22,15 +17,8 @@ const PRIORITIES = ['High','Medium','Low'];
 const ROLE_LABEL = { admin:'Admin', maintenance:'Maintenance' };
 const LINK_HINT = 'Paste a SharePoint or web address. Opens in a new tab — the file stays where it lives.';
 
-/* ---------- who sees what ---------- */
 const VIEWS = {
-  maintenance: [
-    'home',        /* the launcher */
-    'assets','asset',
-    'work','wo','pm',   /* Schedule work — old routes still resolve */
-    'stops',            /* Production Loss */
-    'parts','smart','settings','login'
-  ],
+  maintenance: ['home','assets','asset','work','wo','pm','stops','parts','smart','settings','login'],
   admin: 'all'
 };
 function canView(name){
@@ -45,7 +33,10 @@ let CAL={y:new Date().getFullYear(),m:new Date().getMonth(),pms:true};
 let USERS=[], SMART_Q='', SMART_ASSET='', COMP_DAYS=90, COMP_ASSET='';
 let STOP_DAYS=30, STOP_KIND='', STOP_ASSET='';
 let WORK_TAB='wo';
-let CAUSE_KIND='downtime', CAUSE_TYPE='';
+/* Cause Setup: which list, which scope, and which key within it. */
+let CAUSE_KIND='downtime', CAUSE_SCOPE='all', CAUSE_KEY='';
+/* Analytics filters — kind, chosen machines, window, heatmap metric. */
+let AN={kind:'',assets:[],days:30,metric:'mins'};
 
 const ROUTES={home:renderHome,dashboard:renderDashboard,assets:renderAssets,asset:renderAssetDetail,
   work:renderWork,pm:renderWork,wo:renderWork,
@@ -63,7 +54,6 @@ function route(){
   if(name==='pm')WORK_TAB='pm';
   if(!st.signedIn&&name!=='login'){
     document.getElementById('view').innerHTML=renderLogin();updateChrome();return;}
-  /* The router is the gate. A hidden menu item is not security. */
   if(!canView(name)){
     document.getElementById('view').innerHTML=renderNoAccess(name);updateChrome();return;}
   const fn=ROUTES[name]||renderHome;
@@ -225,9 +215,6 @@ function doChangePassword(){
 
 /* ============================================================
    THE TWO ENTRY POINTS
-   ------------------------------------------------------------
-   "Schedule work" and "Production Loss" — the same pair of words
-   on the home buttons, the sidebar and these dialogs.
    ============================================================ */
 function openWorkChooser(presetAsset){
   const a=presetAsset?`'${jsq(presetAsset)}'`:'';
@@ -283,12 +270,512 @@ function bigActions(presetAsset){
   </div>`;}
 
 /* ============================================================
-   SCHEDULE WORK — work orders and PM on one screen
+   CAUSE SETUP (admin)
    ------------------------------------------------------------
-   No big buttons here. This screen IS the schedule-work screen,
-   so a second button saying the same thing is noise. Each tab
-   carries its own create button instead, which is one tap rather
-   than two.
+   Pick a list, pick a scope, edit the lines. Scope is the change
+   here: a line can apply to everything, to an equipment type, or
+   to named machines — several at once.
+   ============================================================ */
+function setCauseKind(k){CAUSE_KIND=k;route();}
+function setCauseScope(s){
+  CAUSE_SCOPE=s;
+  /* Moving to a new scope with no key selected would show an empty
+     bucket for no reason, so pick a sensible first one. */
+  if(s==='type'){
+    const t=Causes.types();
+    if(!t.includes(CAUSE_KEY))CAUSE_KEY=t[0]||'';
+  }else if(s==='assets'){
+    const a=DB.all('assets');
+    if(!a.some(x=>x.id===CAUSE_KEY))CAUSE_KEY=a.length?a[0].id:'';
+  }else CAUSE_KEY='';
+  route();}
+function setCauseKey(k){CAUSE_KEY=k;route();}
+
+function renderCauses(){
+  const sum=Causes.summary();
+  const kind=CAUSE_KIND, scope=CAUSE_SCOPE, key=CAUSE_KEY;
+  const lines=Causes.linesIn(kind,scope,key);
+  const types=Causes.types();
+  const assets=DB.all('assets');
+
+  /* What a technician on one machine of this bucket actually sees —
+     the point of the screen is that this is never a surprise. */
+  const sampleAsset=scope==='assets'?key
+    :scope==='type'?(assets.find(a=>String(a.type||'').trim()===key)||{}).id||''
+    :(assets[0]||{}).id||'';
+  const effective=Causes.forEquipment(kind,sampleAsset);
+  const usingDefault=sampleAsset?Causes.isFallback(kind,sampleAsset):true;
+
+  const scopeChips=Causes.SCOPE_ORDER.map(s=>
+    `<button class="fchip ${scope===s?'on':''}" onclick="setCauseScope('${s}')">${esc(Causes.SCOPES[s].label)}</button>`).join('');
+
+  let keyPicker='';
+  if(scope==='type'){
+    keyPicker=types.length
+      ? `<div class="chipset" style="margin:10px 0 0">${types.map(t=>
+          `<button class="fchip ${key===t?'on':''}" onclick="setCauseKey('${jsq(t)}')">${esc(t)}</button>`).join('')}</div>`
+      : `<div class="note bad">No equipment has a type yet. Set the type on an
+         equipment record first, or use <b>Chosen machines</b> instead.
+         <a href="#/assets">Open equipment</a>.</div>`;
+  }else if(scope==='assets'){
+    keyPicker=assets.length
+      ? `<label style="margin-top:12px">Which machine are you editing?</label>
+         <select onchange="setCauseKey(this.value)" style="max-width:420px">
+           ${assets.map(a=>`<option value="${esc(a.id)}" ${key===a.id?'selected':''}>${
+             esc(a.id+' · '+a.name)}</option>`).join('')}
+         </select>
+         <div class="hint">A line can cover several machines at once — tick them
+         when you add it. This picker just chooses whose list you are looking at.</div>`
+      : `<div class="note bad">No equipment yet.</div>`;
+  }
+
+  return `
+  <h1 class="page">Cause Setup</h1>
+  <p class="sub">The reasons your technicians pick from when they schedule work or log a production loss.</p>
+
+  ${sum.untyped?`<div class="note">
+    <b>${sum.untyped} piece${sum.untyped===1?'':'s'} of equipment ${sum.untyped===1?'has':'have'} no type.</b>
+    That only matters for type-scoped lines — plant-wide and machine-specific
+    ones still reach them. <a href="#/assets">Open equipment</a>.</div>`:''}
+
+  <div class="card">
+    <h3 class="sec">1 · Which list</h3>
+    <div class="chipset" style="margin-bottom:0">
+      ${Causes.KINDS.map(k=>`<button class="fchip ${kind===k?'on':''}"
+        onclick="setCauseKind('${k}')">${esc(Causes.KIND_LABEL[k])}</button>`).join('')}
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 class="sec">2 · Who it applies to</h3>
+    <div class="chipset" style="margin-bottom:0">${scopeChips}</div>
+    <div class="note">${esc(Causes.SCOPES[scope].hint)}</div>
+    ${keyPicker}
+  </div>
+
+  <div class="card">
+    <h3 class="sec">3 · The reasons${scope==='type'&&key?' · '+esc(key)
+      :scope==='assets'&&key?' · '+esc(DB.assetName(key)):''}</h3>
+    <div class="chipset">
+      <button class="btn filled" onclick="addCauseLine()">&#43; Add a reason</button>
+      <button class="btn out" onclick="seedCauseList()">Load the standard list</button>
+      ${lines.length?`<button class="btn out" onclick="renumberCauses()">Tidy the order</button>
+        <button class="btn bad sm" onclick="clearThisBucket()">Clear these ${lines.length}</button>`:''}
+    </div>
+    ${renderTable([
+      {label:'Order',num:true,render:r=>r.sort||'<span style="color:var(--muted)">—</span>'},
+      {label:'Reason',render:r=>`<b>${esc(r.label)}</b>`},
+      {label:'Applies to',hideSm:true,render:r=>{
+        const s=Causes.scopeOf(r);
+        if(s==='all')return '<span class="chip c-open">Every machine</span>';
+        if(s==='type')return `<span class="chip c-pur">${esc(r.equipType)}</span>`;
+        const ids=Causes.idsOf(r);
+        return ids.length===1?`<span class="chip c-hold">${esc(DB.assetName(ids[0]))}</span>`
+          :`<span class="chip c-hold">${ids.length} machines</span>`;}},
+      {label:'In use',num:true,render:r=>{
+        const n=Causes.usage(r.kind,r.label);
+        return n?`<b>${n}</b>`:'<span style="color:var(--muted)">0</span>';}},
+      {label:'',render:r=>`<button class="btn out sm" onclick="event.stopPropagation();editCauseLine('${jsq(r.id)}')">Edit</button>`}
+    ],lines,{empty:'Nothing set up in this bucket yet.'})}
+    ${sampleAsset?(usingDefault?`<div class="note">
+      <b>Nothing configured reaches ${esc(DB.assetName(sampleAsset))}, so the standard list shows:</b><br>
+      ${effective.map(x=>esc(x)).join(' · ')}<br><br>
+      That is fine — setup is optional. Your own lines replace the standard ones
+      as soon as you add them.</div>`
+    :`<div class="note"><b>A technician on ${esc(DB.assetName(sampleAsset))} sees:</b><br>
+      ${effective.map(x=>esc(x)).join(' · ')}</div>`):''}
+  </div>
+
+  <div class="card">
+    <h3 class="sec">Everything configured</h3>
+    ${renderTable([
+      {label:'List',render:r=>esc(Causes.KIND_SHORT[r.kind])},
+      {label:'Applies to',render:r=>{
+        const c=r.scope==='all'?'c-open':r.scope==='type'?'c-pur':'c-hold';
+        return `<span class="chip ${c}">${esc(r.label)}</span>`;}},
+      {label:'Reasons',num:true,render:r=>`<b>${r.count}</b>`},
+      {label:'',render:r=>`<button class="btn out sm"
+        onclick="gotoCauseBucket('${jsq(r.kind)}','${jsq(r.scope)}','${jsq(r.key)}')">Open</button>`}
+    ],sum.rows,{empty:'Nothing configured anywhere yet — every machine is on the standard lists.'})}
+    <div class="note">
+      Machines still on the standard list —
+      ${Causes.KINDS.map(k=>`${esc(Causes.KIND_SHORT[k])}: <b>${sum.onDefault[k]}</b> of ${sum.equipment}`).join(' · ')}.
+    </div>
+    ${sum.total?`<div class="actions">
+      <button class="btn bad" onclick="clearWholeList()">Clear the ${esc(Causes.KIND_SHORT[kind])} list everywhere</button>
+      <button class="btn bad" onclick="clearEverything()">Clear all ${sum.total} reasons</button>
+    </div>
+    <div class="note">Clearing changes what is <b>offered</b> from now on. Records
+    already saved keep the words they were saved with — history is never rewritten.</div>`:''}
+  </div>`;}
+
+function gotoCauseBucket(kind,scope,key){
+  CAUSE_KIND=kind;CAUSE_SCOPE=scope;CAUSE_KEY=key;route();}
+
+/* The scope picker inside the add/edit dialog. Switching it swaps
+   which field is shown, so a type line cannot accidentally carry a
+   machine list or the other way round. */
+function causeScopeFields(scope,equipType,assetIds){
+  if(scope==='type')
+    return F.text('equipType','Equipment type',equipType||'',
+      {required:true,list:'dl_ctypes',datalist:Causes.types(),
+       placeholder:'e.g. Ultrasonic welder',
+       hint:'Must match the type on the equipment record exactly.'});
+  if(scope==='assets')
+    return F.checks('assetIds','Which machines',assetIds||[],assetChecklist(),
+      {required:true,hint:'Tick every machine this reason should appear on.'});
+  return `<div class="note">This reason will appear on <b>every</b> machine,
+    on top of anything more specific.</div>`;}
+
+function refreshCauseScope(){
+  const box=document.getElementById('scopeBox');
+  if(!box)return;
+  const d=F.read();
+  box.innerHTML=causeScopeFields(d.scope,d.equipType,d.assetIds);}
+
+function addCauseLine(){
+  /* Default the dialog to whatever bucket is on screen — that is
+     almost always what the admin meant. */
+  const presetIds=CAUSE_SCOPE==='assets'&&CAUSE_KEY?[CAUSE_KEY]:[];
+  const presetType=CAUSE_SCOPE==='type'?CAUSE_KEY:'';
+  Modal.open({title:'Add a reason',
+    body:`${F.select('kind','Which list',CAUSE_KIND,
+        Causes.KINDS.map(k=>({v:k,t:Causes.KIND_LABEL[k]})),{required:true})}
+      ${F.select('scope','Who it applies to',CAUSE_SCOPE,
+        Causes.SCOPE_ORDER.map(s=>({v:s,t:Causes.SCOPES[s].label})),
+        {required:true,onchange:'refreshCauseScope()'})}
+      <div id="scopeBox">${causeScopeFields(CAUSE_SCOPE,presetType,presetIds)}</div>
+      ${F.text('label','The reason','',{required:true,
+        placeholder:'e.g. Sonotrode cracked',
+        hint:'Use the words your technicians actually say. A list nobody recognises gets ignored and everything ends up as "Other".'})}
+      ${F.num('sort','Order',null,{step:'1',placeholder:'e.g. 10',
+        hint:'Optional. Lower numbers come first; blank ones sort last by name.'})}
+      <div id="causeMsg"></div>`,
+    footer:`<button class="btn filled" onclick="doAddCause()">Add</button>
+      <button class="btn out" onclick="Modal.close()">Cancel</button>`});}
+
+function doAddCause(){
+  const d=F.read();
+  const msg=document.getElementById('causeMsg');
+  const show=t=>{if(msg)msg.innerHTML=`<div class="note bad">${esc(t)}</div>`;};
+  if(!d.label)return show('Type the reason.');
+  const r=Causes.add({kind:d.kind,scope:d.scope,equipType:d.equipType,
+    assetIds:d.assetIds||[],label:d.label,sort:d.sort});
+  if(!r)return show('Type the reason.');
+  if(r.needsType)return show('Type the equipment type, or switch to a different scope.');
+  if(r.needsAssets)return show('Tick at least one machine.');
+  if(r.duplicate)return show('That reason is already on this list.');
+  CAUSE_KIND=d.kind;CAUSE_SCOPE=d.scope;
+  CAUSE_KEY=d.scope==='type'?(d.equipType||'').trim()
+    :d.scope==='assets'?((d.assetIds||[])[0]||''):'';
+  Modal.close();route();
+  const n=(d.assetIds||[]).length;
+  toast('Added'+(d.scope==='assets'&&n>1?' to '+n+' machines':'')+' — live straight away');}
+
+function editCauseLine(id){
+  const c=DB.get('causes',id);
+  if(!c){toast('That line no longer exists');route();return;}
+  const scope=Causes.scopeOf(c);
+  const used=Causes.usage(c.kind,c.label);
+  Modal.open({title:'Edit reason',
+    body:`${F.select('kind','Which list',c.kind,
+        Causes.KINDS.map(k=>({v:k,t:Causes.KIND_LABEL[k]})),{required:true})}
+      ${F.select('scope','Who it applies to',scope,
+        Causes.SCOPE_ORDER.map(s=>({v:s,t:Causes.SCOPES[s].label})),
+        {required:true,onchange:'refreshCauseScope()'})}
+      <div id="scopeBox">${causeScopeFields(scope,c.equipType,Causes.idsOf(c))}</div>
+      ${F.text('label','The reason',c.label,{required:true})}
+      ${F.num('sort','Order',c.sort,{step:'1'})}
+      ${used?`<div class="note"><b>${used} record${used===1?'':'s'} already use this reason.</b>
+        Renaming it here does not rewrite them — they keep the words they were
+        saved with, which is what you want for history. The new name applies
+        from now on.</div>`:''}
+      <div id="causeMsg"></div>`,
+    footer:`<button class="btn filled" onclick="doUpdateCause('${jsq(id)}')">Save</button>
+      <button class="btn out" onclick="Modal.close()">Cancel</button>
+      ${DB.can('delete')?`<button class="btn bad" style="margin-left:auto" onclick="deleteCause('${jsq(id)}')">Remove</button>`:''}`});}
+
+function doUpdateCause(id){
+  const d=F.read();
+  const msg=document.getElementById('causeMsg');
+  const show=t=>{if(msg)msg.innerHTML=`<div class="note bad">${esc(t)}</div>`;};
+  if(!d.label)return show('Type the reason.');
+  if(d.scope==='type'&&!(d.equipType||'').trim())return show('Type the equipment type.');
+  if(d.scope==='assets'&&!(d.assetIds||[]).length)return show('Tick at least one machine.');
+  Causes.update(id,{kind:d.kind,scope:d.scope,equipType:d.equipType,
+    assetIds:d.assetIds||[],label:d.label,sort:d.sort});
+  CAUSE_KIND=d.kind;CAUSE_SCOPE=d.scope;
+  CAUSE_KEY=d.scope==='type'?(d.equipType||'').trim()
+    :d.scope==='assets'?((d.assetIds||[])[0]||''):'';
+  Modal.close();route();toast('Saved');}
+
+function deleteCause(id){
+  const c=DB.get('causes',id);
+  if(!c)return;
+  const used=Causes.usage(c.kind,c.label);
+  confirmDelete(`Remove "${c.label}" from the list?\n\n`+
+    (used?`${used} record(s) already use it. They keep it — history is not rewritten. It simply stops being offered on new ones.`
+         :'Nothing uses it yet.'),()=>{
+    DB.remove('causes',id);Modal.close();route();toast('Removed from the list');});}
+
+function seedCauseList(){
+  if(CAUSE_SCOPE==='type'&&!CAUSE_KEY){toast('Pick an equipment type first');return;}
+  if(CAUSE_SCOPE==='assets'&&!CAUSE_KEY){toast('Pick a machine first');return;}
+  const where=CAUSE_SCOPE==='all'?'every machine'
+    :CAUSE_SCOPE==='type'?`"${CAUSE_KEY}"`:DB.assetName(CAUSE_KEY);
+  confirmDelete(`Copy the standard ${Causes.KIND_LABEL[CAUSE_KIND].toLowerCase()} into ${where}?\n\n`+
+    'Anything already there is left alone. You can then edit or remove lines.',()=>{
+    const n=Causes.seedDefaults(CAUSE_KIND,CAUSE_SCOPE,CAUSE_KEY);
+    route();
+    toast(n?n+' reasons added':'Everything was already there');});}
+
+/* Renumber 10, 20, 30 … so a line can be dropped between two others
+   later without redoing the whole list. */
+function renumberCauses(){
+  const lines=Causes.linesIn(CAUSE_KIND,CAUSE_SCOPE,CAUSE_KEY);
+  lines.forEach((c,i)=>DB.upsert('causes',{id:c.id,sort:String((i+1)*10)}));
+  route();toast('Order tidied — 10, 20, 30…');}
+
+/* ---------- clearing ----------
+   Always says exactly how many lines will go, and always reminds
+   that history is untouched. */
+function clearThisBucket(){
+  const lines=Causes.linesIn(CAUSE_KIND,CAUSE_SCOPE,CAUSE_KEY);
+  if(!lines.length){toast('Nothing to clear here');return;}
+  const where=CAUSE_SCOPE==='all'?'every machine'
+    :CAUSE_SCOPE==='type'?CAUSE_KEY:DB.assetName(CAUSE_KEY);
+  confirmDelete(`Clear ${lines.length} reason(s) from ${where}?\n\n`+
+    'Records already saved keep the words they were saved with — only what is offered from now on changes.',()=>{
+    const n=Causes.clearBucket(CAUSE_KIND,CAUSE_SCOPE,CAUSE_KEY);
+    route();toast(n+' removed');});}
+
+function clearWholeList(){
+  const n=Causes.all().filter(c=>c.kind===CAUSE_KIND).length;
+  if(!n){toast('That list is already empty');return;}
+  confirmDelete(`Clear the whole ${Causes.KIND_SHORT[CAUSE_KIND]} list?\n\n`+
+    `${n} reason(s) across every scope will go, and every machine falls back to the standard list.\n\n`+
+    'History is not rewritten.',()=>{
+    const done=Causes.clearKind(CAUSE_KIND);
+    route();toast(done+' removed — back to the standard list');});}
+
+function clearEverything(){
+  const n=Causes.all().length;
+  if(!n){toast('Nothing configured');return;}
+  confirmDelete(`Clear ALL ${n} configured reasons, across all three lists?\n\n`+
+    'Every machine falls back to the standard lists, so nothing breaks and nobody is blocked.\n\n'+
+    'Records already saved keep their reasons.',()=>{
+    const done=Causes.clearAll();
+    route();toast(done+' removed — everything back to the standard lists');});}
+
+/* ============================================================
+   DASHBOARD — the charts
+   ------------------------------------------------------------
+   Filters at the top, charts below. Everything responds to the
+   same three controls: what kind of loss, which machines, and how
+   far back. The filter state lives in AN so it survives a re-render.
+   ============================================================ */
+function anSet(k,v){AN[k]=v;route();}
+function anToggleAsset(id){
+  const i=AN.assets.indexOf(id);
+  if(i>=0)AN.assets.splice(i,1);else AN.assets.push(id);
+  route();}
+function anClearAssets(){AN.assets=[];route();}
+function anOpts(extra){
+  return Object.assign({days:AN.days,kind:AN.kind,assetIds:AN.assets.slice()},extra||{});}
+
+/* What the filter bar currently means, in words, so a chart is never
+   ambiguous about what it is showing. */
+function anScopeText(){
+  const kind=AN.kind==='defect'?'Defects':AN.kind==='downtime'?'Downtime':'All production loss';
+  const who=!AN.assets.length?'all equipment'
+    :AN.assets.length===1?DB.assetName(AN.assets[0])
+    :AN.assets.length+' machines';
+  return `${kind} · ${who} · last ${AN.days} days`;}
+
+function renderDashboard(){
+  const assets=DB.all('assets');
+  const s=Stops.summary(anOpts());
+  const trend=Stops.byDay(anOpts());
+  const byAsset=Stops.byAsset(anOpts());
+  const reasons=Stops.byReason(anOpts());
+  const defectReasons=Stops.defectByReason(anOpts());
+  const grid=Stops.heatmap(anOpts({metric:AN.metric}));
+  const pk=Stops.peak(anOpts({metric:AN.metric}));
+  const comp=Compliance.summary({days:90});
+  const openWos=DB.all('wos').filter(DB.isActive);
+
+  const fmtM=v=>Stops.fmtMins(Math.round(v));
+  const metricName=AN.metric==='parts'?'parts lost'
+    :AN.metric==='events'?'events':'minutes lost';
+  const metricFmt=AN.metric==='mins'?fmtM:(v=>Charts.short(v));
+
+  /* Machine filter — chips, because a technician picking three cells
+     wants to see which are on without opening anything. */
+  const assetChips=assets.map(a=>
+    `<button class="fchip ${AN.assets.includes(a.id)?'on':''}"
+      onclick="anToggleAsset('${jsq(a.id)}')">${esc(a.name)}</button>`).join('');
+
+  return `
+  <h1 class="page">Dashboard</h1>
+  <p class="sub">${esc(DB.raw().meta.site||'Maintenance overview')}</p>
+  ${openStopsBanner()}
+
+  <div class="card filterbar">
+    <div class="fb-row">
+      <span class="fb-lbl">Show</span>
+      <button class="fchip ${AN.kind===''?'on':''}" onclick="anSet('kind','')">Everything</button>
+      <button class="fchip ${AN.kind==='downtime'?'on':''}" onclick="anSet('kind','downtime')">Downtime only</button>
+      <button class="fchip ${AN.kind==='defect'?'on':''}" onclick="anSet('kind','defect')">Defects only</button>
+      <span class="fb-lbl" style="margin-left:14px">Period</span>
+      ${[7,30,60,90,180].map(d=>`<button class="fchip ${AN.days===d?'on':''}"
+        onclick="anSet('days',${d})">${d}d</button>`).join('')}
+    </div>
+    <div class="fb-row">
+      <span class="fb-lbl">Equipment</span>
+      <button class="fchip ${!AN.assets.length?'on':''}" onclick="anClearAssets()">All</button>
+      ${assetChips||'<span style="color:var(--muted);font-size:12.5px">No equipment yet</span>'}
+    </div>
+    <div class="fb-now">${esc(anScopeText())}</div>
+  </div>
+
+  <div class="grid g4" style="margin-bottom:18px">
+    <div class="stat"><div class="ic" style="background:var(--bad-c);color:var(--bad)">&#9201;</div>
+      <div class="n" style="color:${s.mins?'var(--bad)':'var(--ok)'}">${Stops.fmtMins(s.mins)}</div>
+      <div class="l">Time lost</div>
+      <div class="d">${s.downEvents} downtime · ${s.defectEvents} defect</div></div>
+    <div class="stat"><div class="ic" style="background:var(--pur-c);color:var(--pur)">&#128230;</div>
+      <div class="n" style="color:${s.parts?'var(--bad)':'var(--ok)'}">${s.parts||0}</div>
+      <div class="l">Parts lost</div>
+      <div class="d">${s.defectParts} from defects</div></div>
+    <div class="stat"><div class="ic" style="background:var(--warn-c);color:var(--warn)">&#128176;</div>
+      <div class="n">${s.cost===null?'—':money0(s.cost)}</div>
+      <div class="l">Estimated cost</div>
+      <div class="d">${s.cost===null?'set hourly rates on equipment':'time lost × hourly rate'}</div></div>
+    <div class="stat click" onclick="location.hash='#/compliance'">
+      <div class="ic" style="background:${comp.pct===null?'var(--surf-3)':comp.pct>=90?'var(--ok-c)':'var(--warn-c)'};
+        color:${comp.pct===null?'var(--muted)':comp.pct>=90?'var(--ok)':'var(--warn)'}">&#9989;</div>
+      <div class="n">${comp.pct===null?'—':comp.pct+'%'}</div>
+      <div class="l">PM compliance (90d)</div>
+      <div class="d">${comp.overdueNow} overdue · ${openWos.length} open WOs</div></div>
+  </div>
+
+  <div class="card">
+    <h3 class="sec">Production loss over time</h3>
+    ${Charts.columns(trend.map(d=>({label:d.label,a:d.downMins,b:d.defMins})),
+      {stacked:true,fmt:fmtM,nameA:'Downtime',nameB:'Defect',
+       colorA:Charts.C.down,colorB:Charts.C.defect,
+       emptyText:'Nothing recorded in this period.'})}
+    ${Charts.legend([{label:'Downtime',color:Charts.C.down},{label:'Defect',color:Charts.C.defect}])}
+    <div class="note">${esc(anScopeText())}. Minutes per day, split by what caused the loss.</div>
+  </div>
+
+  <div class="grid g2">
+    <div class="card">
+      <h3 class="sec">Time lost by machine</h3>
+      ${Charts.bars(byAsset.slice(0,10).map(a=>({
+        label:DB.assetName(a.assetId),value:a.mins,display:Stops.fmtMins(a.mins),
+        color:Charts.C.down})),{fmt:fmtM,emptyText:'Nothing recorded.'})}
+    </div>
+    <div class="card">
+      <h3 class="sec">Parts lost by machine</h3>
+      ${Charts.bars(byAsset.filter(a=>a.parts>0).slice(0,10).map(a=>({
+        label:DB.assetName(a.assetId),value:a.parts,display:String(a.parts),
+        color:Charts.C.defect})),{emptyText:'No parts loss recorded.'})}
+    </div>
+  </div>
+
+  ${AN.kind!=='downtime'?`<div class="card">
+    <h3 class="sec">Defect causes — by parts scrapped</h3>
+    ${Charts.pareto(defectReasons.slice(0,8).map(r=>({
+      label:r.reason,value:r.parts,display:r.parts+'p',color:Charts.C.defect})),
+      {emptyText:'No defects recorded in this period.'})}
+    <div class="note">Ranked by <b>parts</b>, not minutes. A five-minute fault
+    that fills a bin belongs at the top of this chart, and a time-ranked view
+    would bury it. The line is the running total — where it flattens is where
+    the remaining causes stop mattering.</div>
+  </div>`:''}
+
+  ${AN.kind!=='defect'?`<div class="card">
+    <h3 class="sec">Downtime causes — by time lost</h3>
+    ${Charts.pareto(reasons.filter(r=>r.kind!=='defect').slice(0,8).map(r=>({
+      label:r.reason,value:r.mins,display:Stops.fmtMins(r.mins),color:Charts.C.down})),
+      {fmt:fmtM,emptyText:'No downtime recorded in this period.'})}
+  </div>`:''}
+
+  <div class="card">
+    <h3 class="sec">When it happens</h3>
+    <div class="chipset">
+      <span class="fb-lbl">Measure</span>
+      <button class="fchip ${AN.metric==='mins'?'on':''}" onclick="anSet('metric','mins')">Minutes lost</button>
+      <button class="fchip ${AN.metric==='parts'?'on':''}" onclick="anSet('metric','parts')">Parts lost</button>
+      <button class="fchip ${AN.metric==='events'?'on':''}" onclick="anSet('metric','events')">Number of events</button>
+    </div>
+    ${Charts.heatmap(grid,{fmt:metricFmt,
+      emptyText:'Nothing recorded in this period.'})}
+    <div class="heat-key">
+      <span>less</span>
+      <i style="background:#f4f7fb"></i><i style="background:#ffe0b2"></i>
+      <i style="background:#ffb74d"></i><i style="background:#e57373"></i>
+      <i style="background:#b3261e"></i>
+      <span>more</span>
+    </div>
+    ${pk?`<div class="note">
+      <b>${esc(pk.cellDayName)} at ${pk.cell.hour}:00 is the single worst hour</b>
+      in this period. Across the week, <b>${pk.topHour}:00</b> accounts for
+      ${pk.topHourPct}% of all ${esc(metricName)}, and <b>${esc(pk.topDayName)}</b>
+      for ${pk.topDayPct}%.<br><br>
+      A total tells you how much you lost. This tells you <i>when</i> — which is
+      what exposes the start-up hour, the shift-handover gap, or the cell that
+      only misbehaves on nights.</div>`
+    :`<div class="note">Nothing to read yet — log a few production losses and the
+      pattern shows up here.</div>`}
+  </div>
+
+  <div class="grid g2">
+    <div class="card">
+      <h3 class="sec">Downtime vs defect</h3>
+      ${Charts.donut([
+        {label:'Downtime',value:s.downMins,display:Stops.fmtMins(s.downMins),color:Charts.C.down},
+        {label:'Defect',value:s.defMins,display:Stops.fmtMins(s.defMins),color:Charts.C.defect}],
+        {centre:Stops.fmtMins(s.mins),centreSub:'total time lost',
+         emptyText:'Nothing recorded.'})}
+      ${Charts.legend([{label:'Downtime',color:Charts.C.down},{label:'Defect',color:Charts.C.defect}])}
+    </div>
+    <div class="card">
+      <h3 class="sec">Events by machine</h3>
+      ${Charts.bars(byAsset.slice(0,8).map((a,i)=>({
+        label:DB.assetName(a.assetId),value:a.count,display:String(a.count),
+        color:Charts.PALETTE[i%Charts.PALETTE.length]})),
+        {emptyText:'Nothing recorded.'})}
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 class="sec">The numbers behind the charts</h3>
+    ${renderTable([
+      {label:'Equipment',render:r=>`<b>${esc(DB.assetName(r.assetId))}</b>`},
+      {label:'Events',num:true,render:r=>r.count},
+      {label:'Downtime',num:true,render:r=>Stops.fmtMins(r.down)},
+      {label:'Defect time',num:true,hideSm:true,render:r=>Stops.fmtMins(r.defect)},
+      {label:'Parts lost',num:true,render:r=>r.parts||'—'},
+      {label:'Total time',num:true,render:r=>`<b>${Stops.fmtMins(r.mins)}</b>`}
+    ],byAsset,{empty:'Nothing recorded in this period.',onRow:'openAsset'})}
+    <div class="actions">
+      <a class="btn out sm" href="#/stops">Open Production Loss</a>
+      <button class="btn out sm" onclick="exportDashboard()">&#128196; Export this view</button>
+    </div>
+  </div>`;}
+
+/* Exports exactly what the filters are showing, so a chart on screen
+   and the spreadsheet in an email always agree. */
+function exportDashboard(){
+  const rows=Stops.exportRows(anOpts());
+  if(!rows.length){toast('Nothing to export in this view');return;}
+  CSV.download('production-loss-'+today()+'.csv',CSV.build(Stops.EXPORT_COLUMNS,rows));
+  toast(rows.length+' records exported');}
+
+/* ============================================================
+   SCHEDULE WORK — work orders and PM on one screen
    ============================================================ */
 function setWorkTab(tab){
   WORK_TAB=tab;
@@ -297,8 +784,7 @@ function setWorkTab(tab){
   route();}
 
 function renderWork(){
-  const wos=DB.all('wos');
-  const pms=DB.all('pms');
+  const wos=DB.all('wos'), pms=DB.all('pms');
   const openN=wos.filter(DB.isOpen).length;
   const overdueN=pms.filter(p=>(DB.daysUntil(p.nextDue)??99)<0).length;
   return `
@@ -453,9 +939,8 @@ function stopQuickTime(mins){
   if(btn)btn.classList.add('on');
   refreshStopLessons();}
 
-/* Reasons depend on which machine was picked, because they are
-   configured per equipment type. Changing the machine has to
-   rebuild the reason list or it would offer another type's. */
+/* Reasons depend on which machine was picked — they are scoped per
+   machine now — so changing the machine rebuilds the list. */
 function refreshStopReasons(kind){
   const box=document.getElementById('reasonBox');
   if(!box)return;
@@ -464,15 +949,13 @@ function refreshStopReasons(kind){
   box.innerHTML=F.select('reason',label,d.reason||'',
     Stops.reasonOptions(kind,d.assetId||'','',{placeholder:'— choose —'}),
     {required:true,onchange:'refreshStopLessons()'});
-  const a=DB.get('assets',d.assetId||'');
   const hint=document.getElementById('reasonHint');
   if(hint){
     if(!d.assetId)hint.innerHTML='';
-    else if(!a||!a.type)hint.innerHTML=
-      `<div class="hint">This equipment has no type set, so the standard list is showing.</div>`;
-    else if(typeof Causes!=='undefined'&&Causes.isFallback(kind==='defect'?'defect':'downtime',a.type))
-      hint.innerHTML=`<div class="hint">No list set up for <b>${esc(a.type)}</b> yet — showing the standard one.</div>`;
-    else hint.innerHTML=`<div class="hint">List for <b>${esc(a.type)}</b>.</div>`;}
+    else if(typeof Causes!=='undefined'&&
+            Causes.isFallback(kind==='defect'?'defect':'downtime',d.assetId))
+      hint.innerHTML=`<div class="hint">No list set up for this machine yet — showing the standard one.</div>`;
+    else hint.innerHTML=`<div class="hint">List set up for ${esc(DB.assetName(d.assetId))}.</div>`;}
   refreshStopLessons();}
 
 function refreshStopLessons(){
@@ -706,20 +1189,15 @@ function openStopsBanner(){
     </div>
   </div>`;}
 
-/* ============================================================
-   PRODUCTION LOSS — the report screen
-   ============================================================ */
+/* ---------- the Production Loss screen ---------- */
 function setStopDays(d){STOP_DAYS=d;route();}
 function setStopKind(k){STOP_KIND=k;route();}
 function setStopAsset(a){STOP_ASSET=a;route();}
 
-/* Machines ranked across every window at once. One window alone
-   cannot tell a machine that has always been bad from one that
-   went bad last week — and that is the whole question. */
 function rankingTable(rows,metric){
   const W=Stops.WINDOWS;
   if(!rows.length)return '<div class="empty">Nothing recorded yet.</div>';
-  const cell=(c)=>{
+  const cell=c=>{
     if(metric==='parts')return c.parts?`<b>${c.parts}</b>`:'<span style="color:var(--muted)">—</span>';
     return c.mins?`<b>${Stops.fmtMins(c.mins)}</b>`:'<span style="color:var(--muted)">—</span>';};
   return `<div class="tablewrap"><table>
@@ -734,9 +1212,10 @@ function rankingTable(rows,metric){
     </tr>`).join('')}</tbody></table></div>`;}
 
 function renderStops(){
-  const s=Stops.summary({days:STOP_DAYS,assetId:STOP_ASSET,kind:STOP_KIND});
-  const pareto=Stops.byReason({days:STOP_DAYS,assetId:STOP_ASSET,kind:STOP_KIND});
-  const worst=Stops.byAsset({days:STOP_DAYS,kind:STOP_KIND});
+  const opts={days:STOP_DAYS,assetId:STOP_ASSET,kind:STOP_KIND};
+  const s=Stops.summary(opts);
+  const pareto=Stops.byReason(opts);
+  const worst=Stops.byAsset(opts);
   const defects=Stops.defectRanking();
   const downs=Stops.downtimeRanking();
   const repeats=Stops.repeats();
@@ -756,9 +1235,9 @@ function renderStops(){
       ${[{v:'',t:'All equipment'}].concat(assets.map(a=>({v:a.id,t:a.id+' · '+a.name})))
         .map(o=>`<option value="${esc(o.v)}" ${STOP_ASSET===o.v?'selected':''}>${esc(o.t)}</option>`).join('')}
     </select>
+    ${canView('dashboard')?'<a class="btn out" href="#/dashboard">&#128200; Charts</a>':''}
     <button class="btn out" onclick="exportStops()">&#128196; Export</button>
   </div>
-
   <div class="grid g4" style="margin-bottom:20px">
     <div class="stat"><div class="n" style="color:${s.mins?'var(--bad)':'var(--ok)'}">${Stops.fmtMins(s.mins)}</div>
       <div class="l">Time lost</div><div class="d">last ${STOP_DAYS} days</div></div>
@@ -770,12 +1249,10 @@ function renderStops(){
       <div class="l">Estimated cost</div>
       <div class="d">${s.cost===null?'set an hourly rate on equipment':'time lost × hourly rate'}</div></div>
   </div>
-
   ${s.staleCount?`<div class="note bad">
     <b>${s.staleCount} record${s.staleCount===1?'':'s'} open for more than ${Stops.STALE_HOURS} hours.</b>
     Almost certainly forgotten rather than genuinely still down. They are kept
     out of the totals above until closed, so the numbers stay honest.</div>`:''}
-
   <div class="card">
     <h3 class="sec">High defect machines — parts lost</h3>
     ${rankingTable(defects,'parts')}
@@ -783,12 +1260,10 @@ function renderStops(){
     7-day column but light in the 90-day one has just started going wrong;
     the reverse is an old problem somebody has already dealt with.</div>
   </div>
-
   <div class="card">
     <h3 class="sec">Highest downtime machines — time lost</h3>
     ${rankingTable(downs,'mins')}
   </div>
-
   ${repeats.length?`<div class="card">
     <h3 class="sec">Same thing, again and again — 3+ times this year</h3>
     <div class="repeats">
@@ -807,12 +1282,9 @@ function renderStops(){
         </div>
       </div>`).join('')}
     </div>
-    <div class="note">The same reason on the same machine three times is a
-    root-cause problem, not bad luck.</div>
   </div>`:''}
-
   ${pareto.length?`<div class="card">
-    <h3 class="sec">Where the loss actually comes from — last ${STOP_DAYS} days</h3>
+    <h3 class="sec">Where the loss comes from — last ${STOP_DAYS} days</h3>
     <div class="tablewrap"><table>
       <thead><tr><th>Reason</th><th>Type</th><th style="text-align:right">Times</th>
         <th style="text-align:right">Time lost</th><th style="text-align:right">Parts</th>
@@ -828,22 +1300,7 @@ function renderStops(){
           <small style="color:var(--muted)">${r.pct}% · running ${r.cumPct}%</small>
         </td></tr>`).join('')}</tbody>
     </table></div>
-    <div class="note">Ranked by time lost. Watch the parts column too — a
-    reason costing minutes but scrapping hundreds is easy to miss here.</div>
   </div>`:''}
-
-  ${worst.length?`<div class="card">
-    <h3 class="sec">Worst equipment — last ${STOP_DAYS} days</h3>
-    ${renderTable([
-      {label:'Equipment',render:r=>`<b>${esc(DB.assetName(r.assetId))}</b><br><small class="mono" style="color:var(--muted)">${esc(r.assetId)}</small>`},
-      {label:'Events',num:true,render:r=>r.count},
-      {label:'Downtime',num:true,render:r=>Stops.fmtMins(r.down)},
-      {label:'Defects',num:true,hideSm:true,render:r=>Stops.fmtMins(r.defect)},
-      {label:'Parts lost',num:true,render:r=>r.parts||'—'},
-      {label:'Total time',num:true,render:r=>`<b>${Stops.fmtMins(r.mins)}</b>`}
-    ],worst,{onRow:'openAsset'})}
-  </div>`:''}
-
   <div class="card">
     <h3 class="sec">Recent events</h3>
     ${renderTable([
@@ -872,198 +1329,6 @@ function exportStops(){
   if(!rows.length){toast('Nothing to export');return;}
   CSV.download('production-loss-'+today()+'.csv',CSV.build(Stops.EXPORT_COLUMNS,rows));
   toast(rows.length+' records exported');}
-
-/* ============================================================
-   CAUSE SETUP (admin)
-   ------------------------------------------------------------
-   The reason lists that appear when somebody schedules work or
-   logs a production loss, held per equipment type.
-   ============================================================ */
-function setCauseKind(k){CAUSE_KIND=k;route();}
-function setCauseType(t){CAUSE_TYPE=t;route();}
-
-function renderCauses(){
-  const sum=Causes.summary();
-  const types=Causes.types();
-  const kind=CAUSE_KIND;
-  const type=CAUSE_TYPE;
-  const lines=Causes.all()
-    .filter(c=>c.kind===kind)
-    .filter(c=>String(c.equipType||'').trim()===String(type||'').trim())
-    .sort((a,b)=>{
-      const sa=DB.num(a.sort),sb=DB.num(b.sort);
-      if(sa!==null&&sb!==null&&sa!==sb)return sa-sb;
-      if(sa!==null&&sb===null)return -1;
-      if(sa===null&&sb!==null)return 1;
-      return String(a.label||'').localeCompare(String(b.label||''));});
-  const effective=Causes.forType(kind,type);
-  const usingDefault=Causes.isFallback(kind,type);
-
-  return `
-  <h1 class="page">Cause Setup</h1>
-  <p class="sub">The reasons your technicians pick from, set per equipment type.</p>
-
-  ${sum.untyped?`<div class="note bad">
-    <b>${sum.untyped} piece${sum.untyped===1?'':'s'} of equipment ${sum.untyped===1?'has':'have'} no type set.</b>
-    A machine with no type always gets the standard list. Set the type on the
-    equipment record to give it its own reasons.
-    <a href="#/assets">Open equipment</a>.</div>`:''}
-
-  <div class="card">
-    <h3 class="sec">Which list are you editing?</h3>
-    <div class="chipset" style="margin-bottom:10px">
-      ${Causes.KINDS.map(k=>`<button class="fchip ${kind===k?'on':''}"
-        onclick="setCauseKind('${k}')">${esc(Causes.KIND_LABEL[k])}</button>`).join('')}
-    </div>
-    <div class="chipset" style="margin-bottom:0">
-      <button class="fchip ${type===''?'on':''}" onclick="setCauseType('')">
-        Every equipment type</button>
-      ${types.map(t=>`<button class="fchip ${type===t?'on':''}"
-        onclick="setCauseType('${jsq(t)}')">${esc(t)}</button>`).join('')}
-    </div>
-    <div class="note">${type===''
-      ? 'Lines here appear on <b>every</b> machine, on top of whatever its own type has.'
-      : `Lines here appear only on equipment of type <b>${esc(type)}</b>, alongside the plant-wide ones.`}</div>
-  </div>
-
-  <div class="card">
-    <h3 class="sec">${esc(Causes.KIND_LABEL[kind])}${type?' · '+esc(type):' · every type'}</h3>
-    <div class="chipset">
-      <button class="btn filled" onclick="addCauseLine()">&#43; Add a reason</button>
-      <button class="btn out" onclick="seedCauseList()">Load the standard list</button>
-      ${lines.length?`<button class="btn out" onclick="renumberCauses()">Tidy the order</button>`:''}
-    </div>
-    ${renderTable([
-      {label:'Order',num:true,render:r=>r.sort||'<span style="color:var(--muted)">—</span>'},
-      {label:'Reason',render:r=>`<b>${esc(r.label)}</b>`},
-      {label:'In use',num:true,render:r=>{
-        const n=Causes.usage(r.kind,r.label);
-        return n?`<b>${n}</b>`:'<span style="color:var(--muted)">0</span>';}},
-      {label:'',render:r=>`<button class="btn out sm" onclick="event.stopPropagation();editCauseLine('${jsq(r.id)}')">Edit</button>`}
-    ],lines,{empty:'Nothing set up here yet — the standard list is being used.'})}
-    ${usingDefault?`<div class="note">
-      <b>Nothing configured, so the standard list is showing to technicians:</b><br>
-      ${effective.map(x=>esc(x)).join(' · ')}<br><br>
-      That is fine — setup is optional. Add your own lines whenever you are ready
-      and they replace the standard ones for this type.</div>`
-    :`<div class="note">Technicians on this type see: ${effective.map(x=>esc(x)).join(' · ')}</div>`}
-  </div>
-
-  <div class="card">
-    <h3 class="sec">Setup so far</h3>
-    <div class="tablewrap"><table>
-      <thead><tr><th>Equipment type</th><th style="text-align:right">Equipment</th>
-        ${Causes.KINDS.map(k=>`<th style="text-align:right">${esc(Causes.KIND_SHORT[k])}</th>`).join('')}
-      </tr></thead>
-      <tbody>${sum.rows.map(r=>`<tr>
-        <td><b>${r.equipType?esc(r.equipType):'Every type (plant-wide)'}</b></td>
-        <td class="num">${r.equipment===null?'—':r.equipment}</td>
-        ${Causes.KINDS.map(k=>`<td class="num">${
-          r.counts[k]?`<b>${r.counts[k]}</b>`
-          :'<span class="chip c-hold">standard</span>'}</td>`).join('')}
-      </tr>`).join('')}</tbody>
-    </table></div>
-    <div class="note">"standard" means nothing is configured and the built-in
-    list is used. Nothing breaks either way.</div>
-  </div>`;}
-
-function causeTypeOptions(current){
-  const types=Causes.types();
-  const out=[{v:'',t:'Every equipment type (plant-wide)'}];
-  types.forEach(t=>out.push({v:t,t:t}));
-  const cur=String(current||'');
-  if(cur&&!types.includes(cur))out.push({v:cur,t:cur});
-  return out;}
-
-function addCauseLine(){
-  Modal.open({title:'Add a reason',
-    body:`${F.select('kind','Which list',CAUSE_KIND,
-        Causes.KINDS.map(k=>({v:k,t:Causes.KIND_LABEL[k]})),{required:true})}
-      ${F.text('equipType','Equipment type',CAUSE_TYPE,
-        {list:'dl_types',datalist:Causes.types(),
-         placeholder:'leave blank for every type',
-         hint:'Must match the type on the equipment record exactly. Leave blank to apply plant-wide.'})}
-      ${F.text('label','The reason',' ',{required:true,
-        placeholder:'e.g. Sonotrode cracked',
-        hint:'Use the words your technicians actually say. A list nobody recognises gets ignored and everything ends up as "Other".'})}
-      ${F.num('sort','Order',null,{step:'1',placeholder:'e.g. 10',
-        hint:'Optional. Lower numbers come first; blank ones sort last by name.'})}
-      <div id="causeMsg"></div>`,
-    footer:`<button class="btn filled" onclick="doAddCause()">Add</button>
-      <button class="btn out" onclick="Modal.close()">Cancel</button>`});
-  setTimeout(()=>{const el=document.getElementById('f_label');if(el)el.value='';},60);}
-
-function doAddCause(){
-  const d=F.read();
-  const msg=document.getElementById('causeMsg');
-  const show=t=>{if(msg)msg.innerHTML=`<div class="note bad">${esc(t)}</div>`;};
-  if(!d.label)return show('Type the reason.');
-  const r=Causes.add(d.kind,d.equipType,d.label,d.sort);
-  if(!r)return show('Type the reason.');
-  if(r.duplicate)return show('That reason is already on this list.');
-  CAUSE_KIND=d.kind;CAUSE_TYPE=(d.equipType||'').trim();
-  Modal.close();route();toast('Added — technicians see it straight away');}
-
-function editCauseLine(id){
-  const c=DB.get('causes',id);
-  if(!c){toast('That line no longer exists');route();return;}
-  const used=Causes.usage(c.kind,c.label);
-  Modal.open({title:'Edit reason',
-    body:`${F.select('kind','Which list',c.kind,
-        Causes.KINDS.map(k=>({v:k,t:Causes.KIND_LABEL[k]})),{required:true})}
-      ${F.text('equipType','Equipment type',c.equipType||'',
-        {list:'dl_types2',datalist:Causes.types(),placeholder:'leave blank for every type'})}
-      ${F.text('label','The reason',c.label,{required:true})}
-      ${F.num('sort','Order',c.sort,{step:'1'})}
-      ${used?`<div class="note"><b>${used} record${used===1?'':'s'} already use this reason.</b>
-        Renaming it here does not rewrite them — they keep the words they were
-        saved with, which is what you want for history. The new name applies
-        from now on.</div>`:''}
-      <div id="causeMsg"></div>`,
-    footer:`<button class="btn filled" onclick="doUpdateCause('${jsq(id)}')">Save</button>
-      <button class="btn out" onclick="Modal.close()">Cancel</button>
-      ${DB.can('delete')?`<button class="btn bad" style="margin-left:auto" onclick="deleteCause('${jsq(id)}')">Delete</button>`:''}`});}
-
-function doUpdateCause(id){
-  const d=F.read();
-  const msg=document.getElementById('causeMsg');
-  if(!d.label){if(msg)msg.innerHTML='<div class="note bad">Type the reason.</div>';return;}
-  DB.upsert('causes',{id,kind:d.kind,equipType:(d.equipType||'').trim(),
-    label:d.label,sort:d.sort||''});
-  CAUSE_KIND=d.kind;CAUSE_TYPE=(d.equipType||'').trim();
-  Modal.close();route();toast('Saved');}
-
-function deleteCause(id){
-  const c=DB.get('causes',id);
-  if(!c)return;
-  const used=Causes.usage(c.kind,c.label);
-  confirmDelete(`Remove "${c.label}" from the list?\n\n`+
-    (used?`${used} record(s) already use it. They keep it — history is not rewritten. It simply stops being offered on new ones.`
-         :'Nothing uses it yet.'),()=>{
-    DB.remove('causes',id);Modal.close();route();toast('Removed from the list');});}
-
-function seedCauseList(){
-  const kindLabel=Causes.KIND_LABEL[CAUSE_KIND];
-  const where=CAUSE_TYPE?`"${CAUSE_TYPE}"`:'every equipment type';
-  confirmDelete(`Copy the standard ${kindLabel.toLowerCase()} into ${where}?\n\n`+
-    'Anything already there is left alone. You can then edit or remove lines.',()=>{
-    const n=Causes.seedDefaults(CAUSE_KIND,CAUSE_TYPE);
-    route();
-    toast(n?n+' reasons added':'Everything was already there');});}
-
-/* Renumber 10, 20, 30 … so a line can be dropped in between two
-   others later without redoing the whole list. */
-function renumberCauses(){
-  const lines=Causes.all()
-    .filter(c=>c.kind===CAUSE_KIND&&String(c.equipType||'').trim()===String(CAUSE_TYPE||'').trim())
-    .sort((a,b)=>{
-      const sa=DB.num(a.sort),sb=DB.num(b.sort);
-      if(sa!==null&&sb!==null&&sa!==sb)return sa-sb;
-      if(sa!==null&&sb===null)return -1;
-      if(sa===null&&sb!==null)return 1;
-      return String(a.label||'').localeCompare(String(b.label||''));});
-  lines.forEach((c,i)=>DB.upsert('causes',{id:c.id,sort:String((i+1)*10)}));
-  route();toast('Order tidied — 10, 20, 30…');}
 
 /* ============================================================
    SMART ASSIST
@@ -1261,94 +1526,6 @@ function renderHome(){
   ${recent.length?`<div class="card"><h3 class="sec">Recently viewed equipment</h3>
     ${recent.map(a=>`<a class="pill" href="#/asset/${encodeURIComponent(a.id)}"><b>${esc(a.id)}</b> <small>${esc(a.name)}</small></a>`).join('')}</div>`:''}`;}
 
-function renderDashboard(){
-  const assets=DB.all('assets'),pms=DB.all('pms'),parts=DB.all('parts'),wos=DB.all('wos');
-  const openWos=wos.filter(DB.isActive);
-  const duePms=pms.filter(p=>{const d=DB.daysUntil(p.nextDue);return d!==null&&d<=7;})
-    .sort((a,b)=>(a.nextDue||'').localeCompare(b.nextDue||''));
-  const lowParts=parts.filter(p=>DB.partStatus(p).label==='Low stock');
-  const unassigned=openWos.filter(w=>!w.assignedTo);
-  const repeats=Insights.repeatFailures();
-  const comp=Compliance.summary({days:90});
-  const st=Stops.summary({days:30});
-  const pareto=Stops.byReason({days:30});
-  const stat=(ic,bg,col,n,l,d)=>`
-    <div class="stat"><div class="ic" style="background:${bg};color:${col}">${ic}</div>
-      <div class="n">${n}</div><div class="l">${esc(l)}</div>${d?`<div class="d">${esc(d)}</div>`:''}</div>`;
-  return `
-  <h1 class="page">Dashboard</h1>
-  <p class="sub">${esc(DB.raw().meta.site||'Maintenance overview')}</p>
-  ${openStopsBanner()}
-  <div class="grid g4" style="margin-bottom:20px">
-    ${stat('&#128451;','var(--info-c)','var(--pri)',assets.length,'Equipment registered')}
-    ${stat('&#129534;','var(--bad-c)','var(--bad)',openWos.length,'Open work orders',
-      openWos.filter(w=>w.priority==='High').length+' high priority')}
-    ${stat('&#9888;',st.mins?'var(--bad-c)':'var(--ok-c)',st.mins?'var(--bad)':'var(--ok)',
-      Stops.fmtMins(st.mins),'Time lost (30d)',
-      (st.parts?st.parts+' parts lost':st.closedCount+' events'))}
-    ${stat('&#9989;',comp.pct===null?'var(--surf-3)':comp.pct>=90?'var(--ok-c)':'var(--warn-c)',
-      comp.pct===null?'var(--muted)':comp.pct>=90?'var(--ok)':'var(--warn)',
-      comp.pct===null?'—':comp.pct+'%','PM compliance (90d)',comp.overdueNow+' overdue now')}
-  </div>
-  ${pareto.length?`<div class="card">
-    <h3 class="sec">Biggest causes of production loss — 30 days</h3>
-    <div class="tablewrap"><table>
-      <thead><tr><th>Reason</th><th>Type</th><th style="text-align:right">Times</th>
-        <th style="text-align:right">Time lost</th><th style="text-align:right">Parts</th>
-        <th>Share</th></tr></thead>
-      <tbody>${pareto.slice(0,6).map(r=>`<tr>
-        <td><b>${esc(r.reason)}</b></td>
-        <td><span class="chip ${r.kind==='defect'?'c-pur':'c-prog'}">${r.kind==='defect'?'Defect':'Downtime'}</span></td>
-        <td class="num">${r.count}</td>
-        <td class="num"><b>${Stops.fmtMins(r.mins)}</b></td>
-        <td class="num">${r.parts||'—'}</td>
-        <td style="min-width:110px"><div class="bar" style="margin:0"><i style="width:${r.pct}%;background:var(--bad)"></i></div></td>
-      </tr>`).join('')}</tbody></table></div>
-    <div class="actions"><a class="btn out sm" href="#/stops">Open Production Loss</a></div>
-  </div>`:''}
-  ${comp.overdueNow?`<div class="note bad">
-    <b>${comp.overdueNow} PM${comp.overdueNow===1?' is':'s are'} overdue right now.</b>
-    <a href="#/compliance">See which</a>.</div>`:''}
-  ${repeats.length?`<div class="card">
-    <h3 class="sec">Recurring failures</h3>
-    ${renderTable([
-      {label:'Equipment',render:r=>`<b>${esc(DB.assetName(r.assetId))}</b><br><small class="mono" style="color:var(--muted)">${esc(r.assetId)}</small>`},
-      {label:'Cause',render:r=>`<span class="chip c-crit">${esc(r.cause)}</span>`},
-      {label:'Times',num:true,render:r=>`<b>${r.count}</b>`},
-      {label:'Hours',num:true,render:r=>r.hours.toFixed(1)},
-      {label:'Every',hideSm:true,render:r=>r.avgGap?'~'+r.avgGap+' days':'—'}
-    ],repeats,{onRow:'openAsset'})}
-    <div class="actions"><a class="btn out sm" href="#/smart">Open Smart Assist</a></div>
-  </div>`:''}
-  ${unassigned.length?`<div class="note bad">
-    <b>${unassigned.length} open work order${unassigned.length===1?'':'s'} with nobody assigned.</b>
-    <a href="#" onclick="WO_FILTER='unassigned';WORK_TAB='wo';location.hash='#/wo';return false;">Show them</a>.</div>`:''}
-  <div class="grid g2">
-    <div class="card"><h3 class="sec">PMs due next</h3>
-      ${renderTable([
-        {label:'PM',key:'id'},
-        {label:'Task',render:r=>`<b>${esc(r.description||'—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>`},
-        {label:'Due',render:r=>dueChip(r.nextDue)},
-        {label:'',render:r=>`<button class="btn ok sm" onclick="event.stopPropagation();completePM('${jsq(r.id)}')">Mark done</button>`}
-      ],duePms.slice(0,6),{empty:'Nothing due in the next 7 days.',onRow:'showPMHistory'})}
-      <div class="actions"><a class="btn out sm" href="#/pm">Open PM plan</a></div></div>
-    <div class="card"><h3 class="sec">Open work orders</h3>
-      ${renderTable([
-        {label:'WO',key:'id'},
-        {label:'Description',render:r=>`<b>${esc(r.description||'—')}</b><br><small style="color:var(--muted)">${esc(DB.assetName(r.assetId))}</small>`},
-        {label:'Assigned',hideSm:true,render:r=>r.assignedTo?esc(r.assignedTo):'<span class="chip c-crit">Nobody</span>'},
-        {label:'Status',render:r=>statusChip(r.status)}
-      ],openWos.slice(0,6),{empty:'No open work orders.',onRow:'editWO'})}
-      <div class="actions"><a class="btn out sm" href="#/wo">Open work orders</a></div></div>
-  </div>
-  ${lowParts.length?`<div class="card"><h3 class="sec">Low stock — reorder</h3>
-    ${renderTable([
-      {label:'Part',key:'id'},{label:'Description',key:'description'},
-      {label:'Location',render:r=>`<span class="mono">${esc(r.location||'—')}</span>`},
-      {label:'On hand',num:true,render:r=>esc(r.qty)},
-      {label:'Min',num:true,render:r=>esc(r.min)}
-    ],lowParts,{onRow:'editPart'})}</div>`:''}`;}
-
 function dueChip(iso){
   const d=DB.daysUntil(iso);
   if(d===null)return '<span class="chip c-hold">No date</span>';
@@ -1366,7 +1543,7 @@ function docChip(url,label){
   return safeUrl(url)?`<span class="chip c-open" title="${esc(label||'Document attached')}">&#128196;</span>`:'';}
 
 /* ============================================================
-   EQUIPMENT  (stored as "assets"; the word on screen is Equipment)
+   EQUIPMENT
    ============================================================ */
 function renderAssets(){
   const rows=DB.all('assets').filter(a=>
@@ -1383,9 +1560,8 @@ function renderAssets(){
   </div>
   ${noType&&canView('causes')?`<div class="note">
     <b>${noType} item${noType===1?'':'s'} ${noType===1?'has':'have'} no equipment type.</b>
-    Type is what decides which reasons a technician sees when they log work or
-    a production loss. Without it they get the standard list.
-    <a href="#/causes">Cause setup</a>.</div>`:''}
+    Type only matters for type-scoped cause lists — plant-wide and
+    machine-specific ones still reach them. <a href="#/causes">Cause setup</a>.</div>`:''}
   <div class="card" style="padding:6px 20px 20px">
     <h3 class="sec" style="margin-top:16px">Equipment register</h3>
     ${renderTable([
@@ -1432,6 +1608,7 @@ function renderAssetDetail(id){
   const comp=Compliance.summary({days:365,assetId:id});
   const pmHistory=Compliance.logsForAsset(id).slice(0,6);
   const st=Stops.summary({days:90,assetId:id});
+  const trend=Stops.byDay({days:30,assetId:id});
   const stopRepeats=Stops.repeats().filter(r=>r.assetId===id);
   const myStops=Stops.forAsset(id).slice(0,8);
   const isDown=Stops.open().some(s=>s.assetId===id);
@@ -1469,6 +1646,7 @@ function renderAssetDetail(id){
     ${DB.can('createPart')?`<button class="btn out" onclick="newPartFor('${jsq(a.id)}')">&#43; Add part</button>`:''}
     ${DB.can('editAsset')?`<button class="btn out" onclick="editAsset('${jsq(a.id)}')">Edit</button>`:''}
     <button class="btn out" onclick="smartForAsset('${jsq(a.id)}')">&#128161; Past fixes</button>
+    ${canView('dashboard')?`<button class="btn out" onclick="chartsForAsset('${jsq(a.id)}')">&#128200; Charts</button>`:''}
   </div>
   <div class="grid g4" style="margin-bottom:20px">
     <div class="stat"><div class="ic" style="background:var(--info-c);color:var(--pri)">&#128203;</div>
@@ -1488,6 +1666,14 @@ function renderAssetDetail(id){
       <div class="n">${done.length}</div><div class="l">Repairs completed</div>
       <div class="d">${health.hours.toFixed(1)}h logged</div></div>
   </div>
+  ${st.closedCount?`<div class="card">
+    <h3 class="sec">Production loss — last 30 days</h3>
+    ${Charts.columns(trend.map(d=>({label:d.label,a:d.downMins,b:d.defMins})),
+      {stacked:true,fmt:v=>Stops.fmtMins(Math.round(v)),
+       colorA:Charts.C.down,colorB:Charts.C.defect,
+       emptyText:'Nothing in the last 30 days.'})}
+    ${Charts.legend([{label:'Downtime',color:Charts.C.down},{label:'Defect',color:Charts.C.defect}])}
+  </div>`:''}
   ${myStops.length?`<div class="card">
     <h3 class="sec">Production loss — last ${myStops.length}</h3>
     ${renderTable([
@@ -1560,10 +1746,11 @@ function renderAssetDetail(id){
       {label:'On hand',num:true,render:r=>r.qty??'—'},
       {label:'Status',render:r=>{const s=DB.partStatus(r);return `<span class="chip ${s.cls}">${s.label}</span>`;}}
     ],parts,{empty:'No parts linked yet.',onRow:'editPart'})}
-    ${parts.some(p=>DB.partAssets(p).length>1)?`<div class="note">
-      Parts marked "also fits" are shared with other machines — one stock
-      figure, counted once, visible from every machine that uses them.</div>`:''}
   </div>`;}
+
+/* Jump to the dashboard already filtered to this machine. */
+function chartsForAsset(id){
+  AN.assets=[id];AN.kind='';location.hash='#/dashboard';}
 
 function newWOFor(a){editWO(null,a);}
 function newPMFor(a){editPM(null,a);}
@@ -1624,9 +1811,6 @@ function downloadTag(id){
   el.click();URL.revokeObjectURL(el.href);
   toast('QR downloaded');}
 
-/* ============================================================
-   EQUIPMENT form
-   ============================================================ */
 function editAsset(id){
   if(id&&!DB.get('assets',id)){toast('That equipment no longer exists');route();return;}
   const a=id?DB.get('assets',id):{};
@@ -1637,7 +1821,7 @@ function editAsset(id){
       ${F.text('type','Equipment type',a.type,
         {list:'dl_equiptypes',datalist:Causes.types(),
          placeholder:'e.g. Ultrasonic welder',
-         hint:'Decides which reasons a technician sees when logging work or a production loss. Machines of the same type share one list.'})}
+         hint:'Groups machines that fail the same way. Used for type-scoped cause lists and for matching in Smart Assist.'})}
       <div class="f2">
         <div>${F.text('manufacturer','Manufacturer',a.manufacturer)}</div>
         <div>${F.text('model','Model',a.model)}</div>
@@ -1845,6 +2029,13 @@ function renderCompliance(){
     <div class="stat"><div class="n" style="color:${s.overdueNow?'var(--bad)':'var(--ok)'}">${s.overdueNow}</div>
       <div class="l">Overdue right now</div></div>
   </div>
+  ${people.length?`<div class="card">
+    <h3 class="sec">Completions by technician — last ${COMP_DAYS} days</h3>
+    ${Charts.bars(people.map(p=>({label:p.name,value:p.done,
+      display:p.done+' ('+p.pct+'% on time)',
+      color:p.pct>=90?Charts.C.ok:(p.pct>=70?'#a55b00':Charts.C.down)})),
+      {emptyText:'Nothing recorded.'})}
+  </div>`:''}
   ${s.overdueNow?`<div class="card"><h3 class="sec">Overdue today — fix these first</h3>
     ${renderTable([
       {label:'PM',render:r=>`<b class="mono">${esc(r.id)}</b>`},
@@ -1875,17 +2066,7 @@ function renderCompliance(){
         :'<span style="color:var(--muted)">—</span>'}
     ],s.logs,{empty:'No PM completions recorded in this period.'})}
     ${s.done?`<div class="note">${s.documented} of ${s.done} (${s.docPct}%) recorded what was found.</div>`:''}
-  </div>
-  ${people.length?`<div class="card"><h3 class="sec">By technician — last ${COMP_DAYS} days</h3>
-    ${renderTable([
-      {label:'Technician',render:r=>`<b>${esc(r.name)}</b>`},
-      {label:'Completed',num:true,render:r=>r.done},
-      {label:'On time',num:true,render:r=>r.done-r.late},
-      {label:'Late',num:true,render:r=>r.late?`<b style="color:var(--bad)">${r.late}</b>`:'0'},
-      {label:'On-time rate',render:r=>`<span style="color:${pctColor(r.pct)};font-weight:600">${r.pct}%</span>`}
-    ],people)}
-    <div class="note">Late is usually a scheduling or workload problem rather than a person problem.</div>
-  </div>`:''}`;}
+  </div>`;}
 
 function exportCompliance(){
   const rows=Compliance.exportRows({assetId:COMP_ASSET});
@@ -1957,17 +2138,15 @@ function renderWOCalendar(){
       <span><i style="background:#ffd9d6"></i>Production loss</span>
     </div></div>`;}
 
-/* The cause list depends on which machine is picked, so changing
-   the machine rebuilds it. */
+/* The cause list depends on which machine is picked. */
 function refreshWOCause(excludeId){
   const box=document.getElementById('woCauseBox');
   if(!box)return;
   const d=F.read();
-  const a=DB.get('assets',d.assetId||'');
   box.innerHTML=F.select('cause','Cause of failure',d.cause||Causes.TBD,
-    Causes.options('failure',a&&a.type?a.type:'',d.cause||'',{tbd:true}),
+    Causes.options('failure',d.assetId||'',d.cause||'',{tbd:true}),
     {onchange:`refreshSimilar('${jsq(excludeId||'')}')`})+
-    (a&&a.type?`<div class="hint">List for <b>${esc(a.type)}</b>.</div>`:'');
+    (d.assetId?`<div class="hint">List for ${esc(DB.assetName(d.assetId))}.</div>`:'');
   refreshSimilar(excludeId);}
 
 function editWO(id,presetAsset){
@@ -1977,7 +2156,6 @@ function editWO(id,presetAsset){
   const assetId=w.assetId||presetAsset||'';
   const asset=DB.get('assets',assetId);
   const exclude=w.id||'';
-  /* Parts that fit this machine, plus whatever was already chosen. */
   const partOpts=[{v:'',t:'— none —'}].concat(
     DB.all('parts').filter(p=>!assetId||!DB.partAssets(p).length||DB.partFits(p,assetId)||p.id===w.partsUsed)
       .map(p=>({v:p.id,t:p.id+' · '+(p.description||'')})));
@@ -2006,7 +2184,7 @@ function editWO(id,presetAsset){
         <div>${F.num('cost','Cost',w.cost,{step:'0.01'})}</div>
       </div>
       <div id="woCauseBox">${F.select('cause','Cause of failure',w.cause||Causes.TBD,
-        Causes.options('failure',asset&&asset.type?asset.type:'',w.cause||'',{tbd:true}),
+        Causes.options('failure',assetId,w.cause||'',{tbd:true}),
         {onchange:`refreshSimilar('${jsq(exclude)}')`})}</div>
       ${F.select('partsUsed','Parts used',w.partsUsed,partOpts)}
       ${F.area('notes','What you found and what you did',w.notes,4,
@@ -2045,7 +2223,6 @@ function closeWO(id){
   if(!d.assignedTo)d.assignedTo=DB.getWho();
   d.completedBy=DB.getWho();
   DB.upsert('wos',d);
-  /* A work order generated from a PM is how that PM gets done. */
   const w=DB.get('wos',id);
   if(w&&w.pmId){
     const p=DB.get('pms',w.pmId);
@@ -2063,7 +2240,7 @@ function delWO(id){
     DB.remove('wos',id);Modal.close();route();toast('Work order deleted');});}
 
 /* ============================================================
-   SPARE PARTS — one part can fit several machines
+   SPARE PARTS
    ============================================================ */
 function renderParts(){
   const rows=DB.all('parts').filter(p=>matches(p,['id','description','mfrPn','vendor','location','assetId']));
@@ -2094,9 +2271,6 @@ function renderParts(){
         const ids=DB.partAssets(r);
         if(!ids.length)return '<span style="color:var(--muted)">not linked</span>';
         if(ids.length===1)return esc(DB.assetName(ids[0]));
-        /* Naming every machine makes the column unreadable once a part
-           fits five of them; the count plus the first is enough to
-           recognise it, and the full list is one tap away. */
         return `<b>${ids.length} machines</b><br><small style="color:var(--muted)">${
           esc(DB.assetName(ids[0]))} +${ids.length-1} more</small>`;}},
       {label:'Mfr P/N',hideSm:true,render:r=>`<span class="mono">${esc(r.mfrPn||'—')}</span>`},
@@ -2113,7 +2287,6 @@ function editPart(id,presetAsset){
   if(id&&!DB.get('parts',id)){toast('That part no longer exists');route();return;}
   const p=id?DB.get('parts',id):{};
   const isNew=!id;
-  /* Pre-tick whichever machine we came from. */
   const selected=isNew?(presetAsset?[presetAsset]:[]):DB.partAssets(p);
   Modal.open({title:isNew?'New part':'Part '+p.id,
     body:`${safeUrl(p.imageUrl)?`<div class="prev"><img src="${esc(safeUrl(p.imageUrl))}" alt="" onerror="this.parentNode.style.display='none'"/></div>`:''}
@@ -2141,7 +2314,7 @@ function savePart(isNew){
   if(isNew&&DB.get('parts',d.id)){toast('That part number already exists');return;}
   if(d.docUrl&&!safeUrl(d.docUrl)){toast('The document link is not a valid web address');return;}
   /* Writes assetIds AND assetId so anything still reading the old
-     single field — CSV export, an older cached client — keeps working. */
+     single field keeps working. */
   const rec=Object.assign({},d,DB.partAssetFields(d.assetIds));
   DB.upsert('parts',rec);Modal.close();route();
   const n=rec.assetIds.length;
@@ -2174,16 +2347,17 @@ function renderImport(){
     <div class="chipset">${Object.keys(ENTITY_LABEL).map(e=>
       `<button class="fchip ${IMPORT.entity===e?'on':''}" onclick="setImportEntity('${e}')">${ENTITY_LABEL[e]}</button>`).join('')}</div>
     <div class="note">Recognised fields for <b>${ENTITY_LABEL[IMPORT.entity]}</b>: <span class="mono">${fieldList(IMPORT.entity)}</span>.
-      ${IMPORT.entity==='parts'?`<br><br><b>A part that fits several machines:</b> put every
-      equipment number in one cell separated by semicolons — <span class="mono">3526;3527;3530</span>
-      — and map that column to <span class="mono">assetIds</span>.`:''}
+      ${IMPORT.entity==='parts'?`<br><br><b>A part fitting several machines:</b> put every
+      equipment number in one cell separated by semicolons —
+      <span class="mono">3526;3527;3530</span> — and map it to <span class="mono">assetIds</span>.`:''}
       ${IMPORT.entity==='stops'?`<br><br>Times can be <span class="mono">YYYY-MM-DD HH:MM</span>.
       A row with no end time imports as still open. Map your scrap count to
       <span class="mono">qty</span> so parts lost is counted.`:''}
-      ${IMPORT.entity==='causes'?`<br><br>Bulk-load your reason lists. <span class="mono">kind</span>
-      must be <span class="mono">downtime</span>, <span class="mono">defect</span> or
-      <span class="mono">failure</span>; <span class="mono">equipType</span> must match the type
-      on the equipment record, or be blank for plant-wide.`:''}</div>
+      ${IMPORT.entity==='causes'?`<br><br><span class="mono">kind</span> must be
+      <span class="mono">downtime</span>, <span class="mono">defect</span> or
+      <span class="mono">failure</span>. For scope: leave both blank for plant-wide,
+      fill <span class="mono">equipType</span> for a type, or put equipment numbers in
+      <span class="mono">assetIds</span> separated by semicolons for named machines.`:''}</div>
   </div>
   <div class="card"><h3 class="sec">2 · Load the file</h3>
     <div class="drop" id="drop" ondragover="event.preventDefault();this.classList.add('over')"
@@ -2261,8 +2435,6 @@ function runImport(){
       const k=String(r.kind||'').toLowerCase();
       r.kind=k.includes('defect')||k.includes('quality')||k.includes('scrap')?'defect':'downtime';}
     if(IMPORT.entity==='parts'){
-      /* "3526;3527" in one cell becomes a proper list, and the legacy
-         single field is filled so nothing reading it breaks. */
       const ids=[];
       const push=v=>String(v||'').split(/[;,|]/).forEach(x=>{
         const s=x.trim();if(s&&!ids.includes(s))ids.push(s);});
@@ -2271,7 +2443,15 @@ function runImport(){
     if(IMPORT.entity==='causes'){
       const k=String(r.kind||'').toLowerCase();
       r.kind=k.includes('defect')?'defect':k.includes('fail')?'failure':'downtime';
-      r.equipType=String(r.equipType||'').trim();}});
+      const ids=[];
+      String(r.assetIds||'').split(/[;,|]/).forEach(x=>{
+        const s=x.trim();if(s&&!ids.includes(s))ids.push(s);});
+      r.assetIds=ids;
+      r.equipType=String(r.equipType||'').trim();
+      /* Scope is inferred from what was supplied, so a spreadsheet
+         does not need a scope column at all. */
+      r.scope=ids.length?'assets':(r.equipType?'type':'all');
+      if(r.scope!=='type')r.equipType='';}});
   const {added,updated}=DB.bulkUpsert(IMPORT.entity,clean);
   const ent=IMPORT.entity;
   cancelImport();
@@ -2284,10 +2464,10 @@ function runImport(){
 function exportCSV(entity){
   const fields=Object.keys(CSV.ALIAS[entity]);
   const rows=DB.all(entity).map(r=>{
-    if(entity!=='parts')return r;
-    /* Export the full list in one cell so a round trip keeps every
-       machine, not just the first. */
-    return Object.assign({},r,{assetIds:DB.partAssets(r).join(';')});});
+    if(entity==='parts')return Object.assign({},r,{assetIds:DB.partAssets(r).join(';')});
+    if(entity==='causes')return Object.assign({},r,
+      {scope:Causes.scopeOf(r),assetIds:Causes.idsOf(r).join(';')});
+    return r;});
   if(!rows.length){toast('Nothing to export');return;}
   CSV.download(entity+'-'+today()+'.csv',CSV.build(fields,rows));
   toast(rows.length+' rows exported');}
@@ -2330,18 +2510,12 @@ function renderUsers(){
       <tbody>
         <tr><td colspan="3" style="background:var(--surf-1);font-weight:600;font-size:11px;
           text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">Screens</td></tr>
-        <tr><td>Home</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Equipment</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Schedule Work</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Production Loss</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Spare Parts</td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Smart Assist</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Home · Equipment · Schedule Work</td><td>&#10003;</td><td>&#10003;</td></tr>
+        <tr><td>Production Loss · Spare Parts · Smart Assist</td><td>&#10003;</td><td>&#10003;</td></tr>
         <tr><td>Settings <small style="color:var(--muted)">(password only)</small></td><td>&#10003;</td><td>&#10003;</td></tr>
-        <tr><td>Dashboard</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
-        <tr><td>PM Compliance</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
-        <tr><td>Cause Setup</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
-        <tr><td>QR Tags</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
-        <tr><td>Import CSV · Users</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
+        <tr><td>Dashboard (charts)</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
+        <tr><td>PM Compliance · Cause Setup</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
+        <tr><td>QR Tags · Import CSV · Users</td><td style="color:var(--muted)">—</td><td>&#10003;</td></tr>
         <tr><td colspan="3" style="background:var(--surf-1);font-weight:600;font-size:11px;
           text-transform:uppercase;letter-spacing:.5px;color:var(--muted)">Actions</td></tr>
         <tr><td>Schedule and complete work orders</td><td>&#10003;</td><td>&#10003;</td></tr>
@@ -2368,12 +2542,12 @@ function openAddUser(){
       ${F.text('username','Username','',{required:true,placeholder:'e.g. jdavis',autocomplete:'off'})}
       ${F.select('role','Role','maintenance',[
         {v:'maintenance',t:'Maintenance — the floor screens'},
-        {v:'admin',t:'Admin — everything, including setup and reports'}])}
+        {v:'admin',t:'Admin — everything, including charts and setup'}])}
       ${F.text('password','Temporary password','',{required:true,type:'text',autocomplete:'off'})}
       <div id="userMsg"></div>
       <div class="note"><b>Maintenance</b> sees Equipment, Schedule Work, Production Loss,
-      Spare Parts and Smart Assist. <b>Admin</b> also gets Dashboard, PM Compliance,
-      Cause Setup, QR Tags, Import and Users.</div>`,
+      Spare Parts and Smart Assist. <b>Admin</b> also gets the Dashboard charts,
+      PM Compliance, Cause Setup, QR Tags, Import and Users.</div>`,
     footer:`<button class="btn filled" onclick="doAddUser()">Create account</button>
       <button class="btn out" onclick="Modal.close()">Cancel</button>`});}
 
@@ -2399,7 +2573,7 @@ function openEditUser(username){
       ${F.text('username','Username',u.username,{readonly:true})}
       ${F.select('role','Role',u.role,[
         {v:'maintenance',t:'Maintenance — the floor screens'},
-        {v:'admin',t:'Admin — everything, including setup and reports'}])}
+        {v:'admin',t:'Admin — everything, including charts and setup'}])}
       <div class="note">Changing the role changes which screens they see next time they load the app.</div>
       ${isMe?'<div class="note">This is your own account. You cannot lock yourself out.</div>':''}
       ${openWos.length?`<div class="note"><b>${openWos.length} open work order${openWos.length===1?'':'s'}</b> assigned.</div>`:''}
@@ -2473,7 +2647,6 @@ function renderSettings(){
   const total=Object.values(counts).reduce((a,b)=>a+b,0);
   const comp=Compliance.summary({days:90});
   const noRate=db.assets.filter(a=>DB.num(a.hourlyCost)===null).length;
-  const noType=db.assets.filter(a=>!a.type||!String(a.type).trim()).length;
   return `
   <h1 class="page">Settings</h1>
   <p class="sub">Signed in as <b>${esc(s.who)}</b> · ${esc(ROLE_LABEL[s.role]||s.role)}</p>
@@ -2487,14 +2660,14 @@ function renderSettings(){
       Object.entries(counts).map(([k,v])=>({id:k,k,v})))}
     <div class="note">${total} record${total===1?'':'s'} total ·
       <a href="#/compliance">${comp.pct===null?'no':comp.pct+'%'} PM compliance over 90 days</a>.
-      ${noType?`<br>${noType} item${noType===1?'':'s'} of equipment have no type, so they use the
-      standard cause lists. <a href="#/causes">Cause setup</a>.`:''}
-      ${noRate?`<br>${noRate} item${noRate===1?'':'s'} have no hourly downtime cost set.`:''}</div></div>
+      ${noRate?`<br>${noRate} item${noRate===1?'':'s'} of equipment have no hourly downtime cost,
+      so their losses show time but no dollar figure.`:''}</div></div>
   <div class="card"><h3 class="sec">Backup and sample data</h3>
     <div class="actions">
       <button class="btn filled" onclick="Backup.export()">Download backup</button>
       <button class="btn out" onclick="exportCompliance()">Export PM compliance</button>
       <button class="btn out" onclick="exportStops()">Export production loss</button>
+      <button class="btn out" onclick="exportCSV('causes')">Export cause lists</button>
       <button class="btn out" onclick="migrateUp()" ${s.mode==='cloud'?'':'disabled'}>Upload this device's data</button>
       <button class="btn out" onclick="seedSample()">Load sample data</button></div>
     <div class="note"><b>Upload this device's data</b> pushes anything saved only in this
@@ -2532,6 +2705,13 @@ function seedSample(){
   const back=n=>DB.addDays(d,-n);
   const me=DB.getWho();
   const ago=n=>Stops.minutesAgo(n);
+  /* Build times at known hours so the heatmap has a real pattern —
+     a start-up spike at 06:00 and a night-shift cluster at 22:00. */
+  const at=(daysAgo,hour,min)=>{
+    const x=new Date();x.setDate(x.getDate()-daysAgo);x.setHours(hour,min||0,0,0);
+    const p=n=>String(n).padStart(2,'0');
+    return x.getFullYear()+'-'+p(x.getMonth()+1)+'-'+p(x.getDate())+'T'+p(hour)+':'+p(min||0);};
+
   DB.bulkUpsert('assets',[
     {id:'3526',name:'Top Roll Assembly',type:'Ultrasonic welder',
       manufacturer:'3Con',model:'TR-900',project:'3527',
@@ -2543,26 +2723,30 @@ function seedSample(){
     {id:'3527',name:'Air Compressor #1',type:'Air compressor',
       manufacturer:'Atlas Copco',model:'GA22',
       location:'Utilities room',status:'Active',owner:me,hourlyCost:'400'}]);
-  /* A couple of configured reasons so the setup screen is not empty,
-     while other types still show the fallback. */
+
+  /* A mix of all three scopes so the setup screen shows what each
+     one does without anyone having to build it first. */
   DB.bulkUpsert('causes',[
-    {id:'CZ-1001',kind:'downtime',equipType:'Ultrasonic welder',label:'Sonotrode cracked',sort:'10'},
-    {id:'CZ-1002',kind:'downtime',equipType:'Ultrasonic welder',label:'Horn out of tune',sort:'20'},
-    {id:'CZ-1003',kind:'downtime',equipType:'Ultrasonic welder',label:'Anvil buildup',sort:'30'},
-    {id:'CZ-1004',kind:'downtime',equipType:'',label:'Waiting on parts',sort:'90'},
-    {id:'CZ-1005',kind:'defect',equipType:'Ultrasonic welder',label:'Weld pull test failed',sort:'10'},
-    {id:'CZ-1006',kind:'defect',equipType:'Ultrasonic welder',label:'Burn-through',sort:'20'},
-    {id:'CZ-1007',kind:'failure',equipType:'Ultrasonic welder',label:'Sonotrode wear',sort:'10'}]);
+    {id:'CZ-1001',kind:'downtime',scope:'all',equipType:'',assetIds:[],label:'Waiting on parts',sort:'90'},
+    {id:'CZ-1002',kind:'downtime',scope:'type',equipType:'Ultrasonic welder',assetIds:[],label:'Horn out of tune',sort:'20'},
+    {id:'CZ-1003',kind:'downtime',scope:'type',equipType:'Ultrasonic welder',assetIds:[],label:'Anvil buildup',sort:'30'},
+    {id:'CZ-1004',kind:'downtime',scope:'assets',equipType:'',assetIds:['3526','3530'],label:'Sonotrode cracked',sort:'10'},
+    {id:'CZ-1005',kind:'defect',scope:'type',equipType:'Ultrasonic welder',assetIds:[],label:'Weld pull test failed',sort:'10'},
+    {id:'CZ-1006',kind:'defect',scope:'type',equipType:'Ultrasonic welder',assetIds:[],label:'Burn-through',sort:'20'},
+    {id:'CZ-1007',kind:'defect',scope:'assets',equipType:'',assetIds:['3530'],label:'Fixture misalignment',sort:'30'},
+    {id:'CZ-1008',kind:'failure',scope:'type',equipType:'Ultrasonic welder',assetIds:[],label:'Sonotrode wear',sort:'10'},
+    {id:'CZ-1009',kind:'failure',scope:'all',equipType:'',assetIds:[],label:'Loose fastener',sort:'20'}]);
+
   DB.bulkUpsert('pms',[
     {id:'PM-003',assetId:'3526',description:'Inspect and clean sonotrodes/anvils; check weld quality',
       frequency:'weekly',nextDue:plus(2),tech:me,lastDone:back(5)},
     {id:'PM-004',assetId:'3526',description:'Clean/replace main air supply filters',
       frequency:'monthly',nextDue:plus(9),tech:me,lastDone:back(21)},
-    {id:'PM-005',assetId:'3526',description:'Lubricate sliding and rotating components',
+    {id:'PM-005',assetId:'3530',description:'Lubricate sliding and rotating components',
       frequency:'monthly',nextDue:back(12),tech:me,lastDone:back(42)},
     {id:'PM-007',assetId:'3527',description:'Inspect compressor cooler and drain traps',
       frequency:'quarterly',nextDue:plus(30)}]);
-  /* The sonotrode fits both weld cells — one stock figure, two machines. */
+
   DB.bulkUpsert('parts',[
     Object.assign({id:'CT_12672',description:'Sonotrode',mfrPn:'6821000797',vendor:'3CON',
       location:'SP1-I2-B5',qty:'4',min:'2',cost:'420'},DB.partAssetFields(['3526','3530'])),
@@ -2570,6 +2754,7 @@ function seedSample(){
       location:'SP1-E3-B22',qty:'1',min:'1',cost:'2800'},DB.partAssetFields(['3526','3530'])),
     Object.assign({id:'P-1001',description:'Compressor oil filter',mfrPn:'GRA-4471',vendor:'Grainger',
       location:'SP1-A1-B2',qty:'12',min:'5',cost:'38.50'},DB.partAssetFields(['3527']))]);
+
   DB.bulkUpsert('pmlogs',[
     {id:'PMC-00001',pmId:'PM-003',assetId:'3526',description:'Inspect and clean sonotrodes/anvils; check weld quality',
       frequency:'weekly',dueDate:back(5),doneDate:back(5),daysLate:0,by:me,hours:'0.5',
@@ -2580,47 +2765,58 @@ function seedSample(){
     {id:'PMC-00003',pmId:'PM-004',assetId:'3526',description:'Clean/replace main air supply filters',
       frequency:'monthly',dueDate:back(21),doneDate:back(21),daysLate:0,by:me,hours:'1',
       notes:'Replaced both element filters, drained separator.'}]);
-  /* A spread across the windows so the high-defect ranking has
-     something to show: 3530 bad recently, 3526 bad earlier. */
+
+  /* Losses spread across days and hours so every chart has shape:
+     a 06:00 start-up cluster, a 22:00 night cluster, and one machine
+     that only recently started scrapping parts. */
   DB.bulkUpsert('stops',[
     {id:'EV-00001',kind:'downtime',assetId:'3526',reason:'Sonotrode cracked',
-      startedAt:ago(300),endedAt:ago(180),by:me,closedBy:me,
-      detail:'Machine faulted mid-cycle, drive showed an overcurrent alarm.',
-      fixedBy:'Reset the drive and reseated the encoder plug — it was backed out. Ran clean after.'},
-    {id:'EV-00002',kind:'defect',assetId:'3530',reason:'Weld pull test failed',qty:'26',
-      startedAt:ago(60*24*2),endedAt:ago(60*24*2-45),by:me,closedBy:me,
+      startedAt:at(1,6,10),endedAt:at(1,7,25),by:me,closedBy:me,
+      detail:'Faulted on the first cycle of the shift.',
+      fixedBy:'Replaced sonotrode from CT_12672 stock, retorqued stack to 45 Nm.'},
+    {id:'EV-00002',kind:'downtime',assetId:'3526',reason:'Sonotrode cracked',
+      startedAt:at(8,6,5),endedAt:at(8,6,50),by:me,closedBy:me,
+      detail:'Same crack pattern, first cycle again.',
+      fixedBy:'Swapped sonotrode. Cold starts look like the trigger — raised a work order.'},
+    {id:'EV-00003',kind:'downtime',assetId:'3530',reason:'Horn out of tune',
+      startedAt:at(3,22,15),endedAt:at(3,23,5),by:me,closedBy:me,
+      detail:'Night shift, generator alarm.',
+      fixedBy:'Re-tuned the stack and reseated the transducer.'},
+    {id:'EV-00004',kind:'downtime',assetId:'3530',reason:'Horn out of tune',
+      startedAt:at(10,22,40),endedAt:at(10,23,20),by:me,closedBy:me,
+      detail:'Same alarm, same shift.',
+      fixedBy:'Re-tuned. Third time on nights — worth checking the supply voltage.'},
+    {id:'EV-00005',kind:'defect',assetId:'3530',reason:'Weld pull test failed',qty:'26',
+      startedAt:at(2,14,0),endedAt:at(2,14,45),by:me,closedBy:me,
       detail:'Pull tests failing on station 2, parts going to scrap.',
       fixedBy:'Anvil had material buildup. Cleaned both faces and reset trigger pressure to 3.2 bar.'},
-    {id:'EV-00003',kind:'defect',assetId:'3530',reason:'Burn-through',qty:'14',
-      startedAt:ago(60*24*5),endedAt:ago(60*24*5-30),by:me,closedBy:me,
+    {id:'EV-00006',kind:'defect',assetId:'3530',reason:'Burn-through',qty:'14',
+      startedAt:at(5,9,30),endedAt:at(5,10,0),by:me,closedBy:me,
       detail:'Scorching on the B-side trim.',
       fixedBy:'Weld time down 0.1s, amplitude down 5%. Ran a sample of 20, all good.'},
-    {id:'EV-00004',kind:'defect',assetId:'3526',reason:'Weld pull test failed',qty:'40',
-      startedAt:ago(60*24*70),endedAt:ago(60*24*70-90),by:me,closedBy:me,
-      detail:'Whole shift of suspect welds.',
+    {id:'EV-00007',kind:'defect',assetId:'3530',reason:'Fixture misalignment',qty:'31',
+      startedAt:at(6,6,20),endedAt:at(6,7,10),by:me,closedBy:me,
+      detail:'Whole first hour scrapped before anyone checked.',
+      fixedBy:'Fixture had shifted. Re-datumed and pinned it.'},
+    {id:'EV-00008',kind:'defect',assetId:'3526',reason:'Weld pull test failed',qty:'40',
+      startedAt:at(70,11,0),endedAt:at(70,12,30),by:me,closedBy:me,
+      detail:'Old problem, whole shift of suspect welds.',
       fixedBy:'Generator drifting. Swapped CT_1710 and re-tuned the stack.'},
-    {id:'EV-00005',kind:'downtime',assetId:'3526',reason:'Sonotrode cracked',
-      startedAt:ago(60*24*40),endedAt:ago(60*24*40-120),by:me,closedBy:me,
-      detail:'Third time this quarter.',
-      fixedBy:'Replaced sonotrode from CT_12672 stock. Needs a root-cause look.'},
-    {id:'EV-00006',kind:'downtime',assetId:'3526',reason:'Sonotrode cracked',
-      startedAt:ago(60*24*80),endedAt:ago(60*24*80-100),by:me,closedBy:me,
-      detail:'Cracked face again.',
-      fixedBy:'Replaced sonotrode. Torque on the stack was low — retorqued to 45 Nm.'},
-    {id:'EV-00007',kind:'downtime',assetId:'3527',reason:'Waiting on parts',
+    {id:'EV-00009',kind:'downtime',assetId:'3527',reason:'Waiting on parts',
       startedAt:ago(45),endedAt:'',by:me,
       detail:'Oil filter split, no spare in the crib.'}]);
+
   DB.bulkUpsert('wos',[
     {id:'WO-1002',assetId:'3526',description:'Replace worn sonotrode on station 2',type:'Repair',
       priority:'Medium',requestedBy:me,assignedTo:me,
       dateRequested:back(22),dateCompleted:back(21),hours:'2.5',cost:'1250',
       status:'Completed',cause:'Sonotrode wear',partsUsed:'CT_12672',
       notes:'Sonotrode face pitted. Swapped in CT_12672, retorqued stack to 45 Nm.'},
-    {id:'WO-1003',assetId:'3526',description:'Root-cause the repeat sonotrode cracking',
+    {id:'WO-1003',assetId:'3526',description:'Root-cause the repeat sonotrode cracking on cold starts',
       type:'Improvement',priority:'High',requestedBy:me,
       dateRequested:back(2),dateDue:plus(3),status:'Open',cause:Causes.TBD}]);
   route();
-  toast('Sample data loaded');}
+  toast('Sample data loaded — open the Dashboard to see the charts');}
 
 /* ============================================================
    BOOT

@@ -63,8 +63,6 @@ const CSV = (() => {
       tech:['assignedtechnician','technician','assignedto','owner','tech','responsible'],
       procedureUrl:['procedure','procedureurl','procedurelink','instruction','instructionurl','worksheet','checklist','checklisturl'],
       completed:['completed','done','iscompleted']},
-    /* assetIds accepts several equipment numbers separated by a
-       semicolon, comma or pipe — one part, many machines. */
     parts:{id:['partnumber','partno','partid','id','part'],
       description:['description','partdescription','name'],
       assetIds:['assetids','equipmentids','usedon','usedonequipment','equipment','assets','machines','fits'],
@@ -119,7 +117,9 @@ const CSV = (() => {
       woId:['workorder','workordernumber','wo','wonumber']},
     causes:{id:['id','recordid'],
       kind:['kind','list','listtype'],
-      equipType:['equipmenttype','type','assettype','machinetype','appliesto'],
+      scope:['scope','appliesto','level'],
+      equipType:['equipmenttype','type','assettype','machinetype'],
+      assetIds:['assetids','equipmentids','machines','equipment','assets'],
       label:['label','cause','reason','text','name','description'],
       sort:['sort','order','sequence','position']}};
   function mapHeaders(entity,headers){
