@@ -1,3 +1,3 @@
-# Tech X CMMS v21 — Docked Copilot Panel
+# Tech X CMMS v22 — Copilot Actions
 
-Adds a screen-aware, no-API maintenance assistant docked on the right. It calculates answers directly from Tech X CMMS records and can open the approved Microsoft 365 Copilot URL for broader analysis.
+Docked local maintenance intelligence: screen-aware analysis, inline charts, work-order creation, and weekly report generation. Microsoft 365 Copilot opens at the approved corporate URL. No AI API required.

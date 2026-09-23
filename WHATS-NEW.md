@@ -84,10 +84,10 @@ Existing cause lines keep working — records written before scopes existed are 
 3. Load sample data on a test account and open the **Dashboard** to see the charts with a realistic shape before your own data fills in.
 
 
-## v21 — Docked Tech X Copilot
-- Right-side panel available from every screen
-- Screen-aware suggested questions
-- Deterministic local answers from current CMMS data
-- Equipment ranking, recurring causes, work priorities, overdue PMs and parts risk
-- No API key; no data is sent automatically
-- Microsoft 365 Copilot remains available at the approved corporate URL
+## v22 — Copilot Actions
+- Analyze current equipment
+- Explain downtime with inline charts
+- Create a work order from a recommendation
+- Generate and download a weekly maintenance report
+- Screen-aware prompts and deterministic local answers
+- Approved Microsoft 365 Copilot shortcut

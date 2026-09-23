@@ -60,20 +60,13 @@
 <script src="assets/ui.js"></script>
 <script src="assets/app.js"></script>
 
-<button id="copilotDockBtn" class="copilot-dock-btn" onclick="toggleCopilotPanel()" title="Ask Tech X Copilot">&#128161;</button>
-<aside id="copilotPanel" class="copilot-panel" aria-label="Tech X Copilot" aria-hidden="true">
-  <div class="copilot-panel-head">
-    <div><b>&#128161; Tech X Copilot</b><small>Screen-aware maintenance assistant</small></div>
-    <div><button onclick="openM365Copilot()" title="Open Microsoft 365 Copilot">&#8599;</button><button onclick="toggleCopilotPanel(false)" title="Close">&#10005;</button></div>
-  </div>
-  <div id="copilotPanelScope" class="copilot-panel-scope"></div>
-  <div id="copilotPanelMessages" class="copilot-panel-messages"></div>
-  <div id="copilotPanelPrompts" class="copilot-panel-prompts"></div>
-  <div class="copilot-panel-compose">
-    <textarea id="copilotPanelInput" rows="2" placeholder="Ask about this screen..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();copilotPanelAsk()}"></textarea>
-    <button onclick="copilotPanelAsk()" title="Ask">&#10148;</button>
-  </div>
-  <div class="copilot-panel-foot">Answers use Tech X data in this browser. Validate before acting.</div>
+<button id="copilotDockBtn" class="copilot-dock-btn" onclick="txToggleCopilot()" title="Tech X Copilot">&#128161;</button>
+<aside id="txCopilot" class="tx-copilot" aria-hidden="true">
+ <header><div><b>&#128161; Tech X Copilot</b><small id="txScope">Maintenance intelligence</small></div><div><button onclick="txOpenM365()" title="Open Microsoft 365 Copilot">&#8599;</button><button onclick="txToggleCopilot(false)" title="Close">&#10005;</button></div></header>
+ <div id="txMessages" class="tx-messages"></div>
+ <div id="txPrompts" class="tx-prompts"></div>
+ <footer><textarea id="txInput" rows="2" placeholder="Ask about this screen..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();txAsk()}"></textarea><button onclick="txAsk()">&#10148;</button></footer>
+ <div class="tx-disclaimer">Uses current Tech X records. Validate recommendations before acting.</div>
 </aside>
 
 </body>
