@@ -12,16 +12,15 @@
      assets  — equipment (label changed, storage key did not)
      pms, parts, wos
      pmlogs  — PM completion history (append-only)
-     stops   — production loss events (downtime and defects)
-     causes  — the reason lists an admin configures per equipment type
+     stops   — production loss (downtime and defects)
+     causes  — the reason lists an admin configures
 
-   ROLES AND VISIBILITY
-   Which SCREENS a role can open is a front-end decision. The API
-   returns the same data to every signed-in user, because a
-   technician at a machine needs its full history to do the job.
-   What the API enforces is WRITES: delete, import, cause setup and
-   user management are admin-only, and completion records can never
-   be rewritten by anyone.
+   ROLES: which SCREENS a role opens is a front-end decision. The
+   API returns the same data to every signed-in user, because a
+   technician at a machine needs its full history. What the API
+   enforces is WRITES: delete, import, cause setup and user
+   management are admin-only, and completion records can never be
+   rewritten by anyone.
    ============================================================ */
 
 import crypto from 'node:crypto';
@@ -186,9 +185,9 @@ export default async function handler(req, res) {
       await ensureFoundingAdmin(sql);
       const c = await sql`SELECT COUNT(*)::int AS n FROM users`;
       out.userCount = c[0].n;
-      /* Record counts per collection, so "why can nobody see the
-         equipment" can be answered from a browser without opening a
-         SQL console. Counts only — no record content. */
+      /* Counts per collection, so "why can nobody see the equipment"
+         can be answered from a browser without a SQL console.
+         Counts only — no record content. */
       const counts = await sql`
         SELECT collection, COUNT(*)::int AS n FROM records
         WHERE deleted = false GROUP BY collection ORDER BY collection`;
@@ -277,8 +276,6 @@ export default async function handler(req, res) {
         const { collection, record } = body;
         if (!COLLECTIONS.includes(collection)) return res.status(400).json({ error: 'Unknown collection' });
         if (!record || !record.id) return res.status(400).json({ error: 'Record needs an id' });
-
-        /* Setup data is admin-only. */
         if (ADMIN_WRITE.includes(collection) && !isAdmin(me))
           return res.status(403).json({ error: 'Only an admin can change the cause lists' });
 
