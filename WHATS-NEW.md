@@ -84,11 +84,5 @@ Existing cause lines keep working — records written before scopes existed are 
 3. Load sample data on a test account and open the **Dashboard** to see the charts with a realistic shape before your own data fills in.
 
 
-## v20 — Tech X Copilot
-- New left navigation entry and `#/copilot` page
-- Six guided maintenance investigation prompts
-- Prompt preview and clipboard workflow
-- Live aggregate CMMS snapshot (equipment, work, PM, loss, parts, top asset and cause)
-- Microsoft Copilot launcher
-- Explicit privacy notice and no API key required
-- Responsive premium CMMS layout
+## Microsoft 365 Copilot link
+The launcher now uses `https://m365.cloud.microsoft/chat`.
