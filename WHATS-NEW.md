@@ -91,3 +91,13 @@ Existing cause lines keep working — records written before scopes existed are 
 - Generate and download a weekly maintenance report
 - Screen-aware prompts and deterministic local answers
 - Approved Microsoft 365 Copilot shortcut
+
+
+## V23 — Maintenance Intelligence
+- Transparent equipment risk score: downtime 40%, recurrence 25%, PM status 20%, open work orders 15%
+- “Why?” explanations with evidence, impact, period comparison, cause, and recommendation
+- “What changed?” current 30 days versus previous 30 days
+- Embedded risk and downtime charts in the docked panel
+- Weekly maintenance briefing download
+- One-click work order from a validated recommendation
+- Screen-aware intelligence on Equipment, Dashboard, Production Loss, Work, PM, and Parts
