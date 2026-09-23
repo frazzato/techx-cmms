@@ -1,9 +1,9 @@
 {
   "name": "techx-cmms",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "private": true,
   "type": "module",
-  "description": "Tech X — maintenance management: equipment, scheduled work, production loss, PM compliance, configurable causes, QR tags and Smart Assist.",
+  "description": "Tech X — maintenance management: equipment, scheduled work, production loss analytics, PM compliance, configurable causes, QR tags and Smart Assist.",
   "scripts": { "dev": "vercel dev" },
   "dependencies": { "@neondatabase/serverless": "^1.0.1" },
   "license": "MIT"
