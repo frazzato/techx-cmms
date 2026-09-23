@@ -82,3 +82,13 @@ Existing cause lines keep working — records written before scopes existed are 
 1. Open **Cause Setup** and clear whatever no longer fits. It falls back safely.
 2. Rebuild with the scopes — put genuinely plant-wide reasons at **Every machine**, and machine-specific ones on **Chosen machines**.
 3. Load sample data on a test account and open the **Dashboard** to see the charts with a realistic shape before your own data fills in.
+
+
+## v20 — Tech X Copilot
+- New left navigation entry and `#/copilot` page
+- Six guided maintenance investigation prompts
+- Prompt preview and clipboard workflow
+- Live aggregate CMMS snapshot (equipment, work, PM, loss, parts, top asset and cause)
+- Microsoft Copilot launcher
+- Explicit privacy notice and no API key required
+- Responsive premium CMMS layout
