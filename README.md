@@ -1,3 +1,3 @@
-# Tech X CMMS v20 — Microsoft 365 Copilot
+# Tech X CMMS v21 — Docked Copilot Panel
 
-Copilot launcher uses the company-approved URL: https://m365.cloud.microsoft/chat
+Adds a screen-aware, no-API maintenance assistant docked on the right. It calculates answers directly from Tech X CMMS records and can open the approved Microsoft 365 Copilot URL for broader analysis.

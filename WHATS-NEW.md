@@ -84,5 +84,10 @@ Existing cause lines keep working — records written before scopes existed are 
 3. Load sample data on a test account and open the **Dashboard** to see the charts with a realistic shape before your own data fills in.
 
 
-## Microsoft 365 Copilot link
-The launcher now uses `https://m365.cloud.microsoft/chat`.
+## v21 — Docked Tech X Copilot
+- Right-side panel available from every screen
+- Screen-aware suggested questions
+- Deterministic local answers from current CMMS data
+- Equipment ranking, recurring causes, work priorities, overdue PMs and parts risk
+- No API key; no data is sent automatically
+- Microsoft 365 Copilot remains available at the approved corporate URL

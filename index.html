@@ -31,8 +31,7 @@
     <a class="nav accent-stop" href="#/stops" data-s="stops"><span class="ico">&#9888;</span><span class="lbl">Production Loss</span><span class="navdot" id="navStopDot"></span></a>
     <hr/>
     <a class="nav" href="#/compliance" data-s="compliance"><span class="ico">&#9989;</span><span class="lbl">Compliance</span></a>
-        <a class="nav" href="#/copilot" data-s="copilot"><span class="ico">&#128161;</span><span class="lbl">Tech X Copilot</span></a>
-<a class="nav" href="#/parts" data-s="parts"><span class="ico">&#128230;</span><span class="lbl">Spare Parts</span></a>
+    <a class="nav" href="#/parts" data-s="parts"><span class="ico">&#128230;</span><span class="lbl">Spare Parts</span></a>
     <a class="nav" href="#/smart" data-s="smart"><span class="ico">&#128161;</span><span class="lbl">Smart Assist</span></a>
     <a class="nav" href="#/qr" data-s="qr"><span class="ico">&#128241;</span><span class="lbl">QR Tags</span></a>
     <hr/>
@@ -60,5 +59,22 @@
 <script src="assets/csv.js"></script>
 <script src="assets/ui.js"></script>
 <script src="assets/app.js"></script>
+
+<button id="copilotDockBtn" class="copilot-dock-btn" onclick="toggleCopilotPanel()" title="Ask Tech X Copilot">&#128161;</button>
+<aside id="copilotPanel" class="copilot-panel" aria-label="Tech X Copilot" aria-hidden="true">
+  <div class="copilot-panel-head">
+    <div><b>&#128161; Tech X Copilot</b><small>Screen-aware maintenance assistant</small></div>
+    <div><button onclick="openM365Copilot()" title="Open Microsoft 365 Copilot">&#8599;</button><button onclick="toggleCopilotPanel(false)" title="Close">&#10005;</button></div>
+  </div>
+  <div id="copilotPanelScope" class="copilot-panel-scope"></div>
+  <div id="copilotPanelMessages" class="copilot-panel-messages"></div>
+  <div id="copilotPanelPrompts" class="copilot-panel-prompts"></div>
+  <div class="copilot-panel-compose">
+    <textarea id="copilotPanelInput" rows="2" placeholder="Ask about this screen..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();copilotPanelAsk()}"></textarea>
+    <button onclick="copilotPanelAsk()" title="Ask">&#10148;</button>
+  </div>
+  <div class="copilot-panel-foot">Answers use Tech X data in this browser. Validate before acting.</div>
+</aside>
+
 </body>
 </html>
