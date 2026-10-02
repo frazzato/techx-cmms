@@ -9,8 +9,8 @@
 const DB = (() => {
   const KEY='techx.cmms.v1', TOKEN_KEY='techx.token', USER_KEY='techx.user',
         QUEUE_KEY='techx.queue', PEOPLE_KEY='techx.people', API='/api/data';
-  const LISTS=['assets','pms','parts','wos','pmlogs','stops','causes','processTemplates','processReadings'];
-  const EMPTY={assets:[],pms:[],parts:[],wos:[],pmlogs:[],stops:[],causes:[],processTemplates:[],processReadings:[],processTemplates:[],processReadings:[],
+  const LISTS=['assets','pms','parts','wos','pmlogs','stops','causes'];
+  const EMPTY={assets:[],pms:[],parts:[],wos:[],pmlogs:[],stops:[],causes:[],processTemplates:[],processReadings:[],
     meta:{site:'IAC Cottondale, AL',recentAssets:[]}};
   let cache=null,mode='local',lastRev=null,queue=[],onChange=null,lastError='',me=null,people=[];
 
