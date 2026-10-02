@@ -1,9 +1,9 @@
 {
   "name": "techx-cmms",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "private": true,
   "type": "module",
-  "description": "Tech X CMMS V25 \u2014 automatic cross-intelligence in Tech X Copilot.",
+  "description": "Tech X CMMS V25.1 \u2014 fixed Copilot cross-intelligence",
   "scripts": {
     "dev": "vercel dev"
   },

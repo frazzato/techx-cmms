@@ -1,11 +1,8 @@
-# V25 — Tech X Copilot Cross-Intelligence
+# V25.1 — Copilot Cross-Intelligence Fixed
 
-- Automatic Plant Findings appear when the existing Copilot panel opens.
-- Process ↔ Scrap ↔ Downtime ↔ Work Orders ↔ PM cross-analysis.
-- Equipment Health Score and Process Stability Score.
-- Top loss-driver ranking and What Changed comparison.
-- Uses current Tech X data only; no Copilot/OpenAI key required.
-- No new menu, screen, or button.
-- Preserves V24.4 process history, Excel XML / CSV export, V24.3 admin setup, and V24.2 range fixes.
-
-Associations are investigative signals, not proof of causation.
+- Corrected the V25 JavaScript startup failure.
+- Added automatic plant findings inside the existing Tech X Copilot.
+- Cross-analyzes process readings, scrap, downtime, open work orders, and overdue PMs.
+- Adds equipment health, process stability, top risk driver, and 7-day What Changed insights.
+- Preserves all V24.4 process history and XML/CSV export functionality.
+- No AI API key is required.
