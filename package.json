@@ -1,9 +1,9 @@
 {
   "name": "techx-cmms",
-  "version": "2.4.0",
+  "version": "2.4.2",
   "private": true,
   "type": "module",
-  "description": "Tech X CMMS V24 \u2014 maintenance and process intelligence with X294 Headliner parameter control.",
+  "description": "Tech X CMMS V24.2 \u2014 corrected process parameter range handling.",
   "scripts": {
     "dev": "vercel dev"
   },

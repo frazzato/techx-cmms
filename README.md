@@ -1,7 +1,6 @@
-# Tech X CMMS V24 — Process Intelligence
+# Tech X CMMS V24.2 — Process Intelligence
 
-Adds admin-controlled process templates, append-only actual-value readings, automatic specification checks, mandatory out-of-spec acknowledgement, and cross-analysis with production loss.
+V24.2 fixes process specification range parsing and evaluation while preserving all V24.1 features.
 
-Initial project/model: **X294 Headliner** for equipment 10026, 10027, and 10028.
-
-Deploy to Vercel using the existing Neon `DATABASE_URL` and admin environment variables.
+## Upgrade
+Deploy these files over V24.1. Sign in as Admin, open **Process Parameters → Admin Setup**, and click **Install / Repair X294 defaults** once to repair any malformed ranges already saved in the database.
