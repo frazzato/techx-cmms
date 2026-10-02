@@ -25,11 +25,11 @@
 
 import crypto from 'node:crypto';
 
-const COLLECTIONS = ['assets', 'pms', 'parts', 'wos', 'pmlogs', 'stops', 'causes'];
-const APPEND_ONLY = ['pmlogs'];
+const COLLECTIONS = ['assets', 'pms', 'parts', 'wos', 'pmlogs', 'stops', 'causes', 'processTemplates', 'processReadings'];
+const APPEND_ONLY = ['pmlogs', 'processReadings'];
 /* Setup data, not day-to-day work. A technician logging a stoppage
    must not be able to rewrite the list of reasons underneath it. */
-const ADMIN_WRITE = ['causes'];
+const ADMIN_WRITE = ['causes', 'processTemplates'];
 const ROLES = ['maintenance', 'admin'];
 const SESSION_DAYS = 30;
 const PBKDF2_ROUNDS = 210000;
@@ -144,7 +144,7 @@ async function readAll(sql) {
   const rows = await sql`
     SELECT collection, id, data, updated_by, updated_at
     FROM records WHERE deleted = false ORDER BY collection, id`;
-  const out = { assets: [], pms: [], parts: [], wos: [], pmlogs: [], stops: [], causes: [] };
+  const out = { assets: [], pms: [], parts: [], wos: [], pmlogs: [], stops: [], causes: [], processTemplates: [], processReadings: [] };
   rows.forEach(r => {
     /* updated_by comes from the session, so it cannot be spoofed. */
     if (out[r.collection]) out[r.collection].push(Object.assign({}, r.data, {
@@ -277,7 +277,7 @@ export default async function handler(req, res) {
         if (!COLLECTIONS.includes(collection)) return res.status(400).json({ error: 'Unknown collection' });
         if (!record || !record.id) return res.status(400).json({ error: 'Record needs an id' });
         if (ADMIN_WRITE.includes(collection) && !isAdmin(me))
-          return res.status(403).json({ error: 'Only an admin can change the cause lists' });
+          return res.status(403).json({ error: 'Only an admin can change setup lists' });
 
         /* An audit record is written once and never rewritten. */
         if (APPEND_ONLY.includes(collection)) {
