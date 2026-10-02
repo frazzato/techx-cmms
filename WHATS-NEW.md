@@ -1,8 +1,7 @@
-# V25.1 — Copilot Cross-Intelligence Fixed
+# V25.2 — Process Persistence Fix
 
-- Corrected the V25 JavaScript startup failure.
-- Added automatic plant findings inside the existing Tech X Copilot.
-- Cross-analyzes process readings, scrap, downtime, open work orders, and overdue PMs.
-- Adds equipment health, process stability, top risk driver, and 7-day What Changed insights.
-- Preserves all V24.4 process history and XML/CSV export functionality.
-- No AI API key is required.
+- Fixed disappearing process parameters and readings after cloud refresh.
+- Registered `processTemplates` and `processReadings` in the client synchronization collection list.
+- Preserved these collections during load, refresh, polling, seed, and cache replacement.
+- Hardened equipment ID and project/model matching in process history.
+- Preserved V25.1 Copilot Cross-Intelligence and all V24.4 functionality.
