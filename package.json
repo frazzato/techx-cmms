@@ -1,9 +1,9 @@
 {
   "name": "techx-cmms",
-  "version": "2.5.2",
+  "version": "2.5.3",
   "private": true,
   "type": "module",
-  "description": "Tech X CMMS V25.2 \u2014 process parameter persistence fix with Copilot Cross-Intelligence.",
+  "description": "Tech X CMMS V25.3 - Process history print, CSV and Excel XML export.",
   "scripts": {
     "dev": "vercel dev"
   },

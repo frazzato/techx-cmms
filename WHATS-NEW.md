@@ -1,7 +1,5 @@
-# V25.2 — Process Persistence Fix
+# V25.3 — Process History Print & Export
 
-- Fixed disappearing process parameters and readings after cloud refresh.
-- Registered `processTemplates` and `processReadings` in the client synchronization collection list.
-- Preserved these collections during load, refresh, polling, seed, and cache replacement.
-- Hardened equipment ID and project/model matching in process history.
-- Preserved V25.1 Copilot Cross-Intelligence and all V24.4 functionality.
+- Added Print, Download CSV, and Download Excel XML to Process Parameters History.
+- Exports respect Equipment, Project/Model, and 7/30/60-day filters.
+- Preserved V25.2 persistence and V25 Copilot Cross-Intelligence.
