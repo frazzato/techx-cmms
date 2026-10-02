@@ -18,7 +18,7 @@ const ROLE_LABEL = { admin:'Admin', maintenance:'Maintenance / Process Tech' };
 const LINK_HINT = 'Paste a SharePoint or web address. Opens in a new tab — the file stays where it lives.';
 
 const VIEWS = {
-  maintenance: ['home','assets','asset','work','wo','pm','stops','parts','process','smart','settings','login'],
+  maintenance: ['home','dashboard','compliance','assets','asset','work','wo','pm','stops','parts','process','smart','settings','login'],
   admin: 'all'
 };
 function canView(name){
@@ -592,6 +592,20 @@ function anScopeText(){
     :AN.assets.length+' machines';
   return `${kind} · ${who} · last ${AN.days} days`;}
 
+function processCompliance(days=30,assetId=''){
+  const all=DB.all('processReadings'),since=Date.now()-days*86400000;
+  const rows=all.filter(r=>(!assetId||String(r.assetId)===String(assetId))&&new Date(r.recordedAt||r.createdAt||0).getTime()>=since)
+    .sort((x,y)=>new Date(y.recordedAt||y.createdAt||0)-new Date(x.recordedAt||x.createdAt||0));
+  const out=rows.filter(r=>r.result==='out'),inSpec=rows.filter(r=>r.result==='in').length;
+  const pct=rows.length?Math.round(inSpec/rows.length*100):null;
+  const byAsset={};out.forEach(r=>{(byAsset[r.assetId]??=[]).push(r)});
+  return {rows,out,inSpec,pct,byAsset};
+}
+function processAttentionRows(rows,limit=25){
+  if(!rows.length)return '<div class="empty">No out-of-spec process readings in this period.</div>';
+  return `<div class="attn-list">${rows.slice(0,limit).map(r=>{const d=new Date(r.recordedAt||r.createdAt),asset=DB.get('assets',r.assetId),when=isNaN(d)?'Date unavailable':d.toLocaleDateString()+' · '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});return `<div class="attn-item bad"><div class="attn-flag">OUT OF SPEC</div><div class="attn-main"><b>${esc(r.assetId)} · ${esc(asset?.name||'Equipment')}</b><span>${esc(r.parameter)} · Actual <b>${esc(r.actual)}</b> · Spec ${esc(r.min)} – ${esc(r.max)} ${esc(r.unit||'')}</span><small>${esc(when)} · ${esc(r.project||'No project/model')} · Recorded by ${esc(r.recordedBy||'Unknown')}</small>${r.ackReason||r.correctiveAction?`<small>Acknowledged: ${esc(r.ackReason||'—')} · Action: ${esc(r.correctiveAction||'—')}</small>`:''}</div><a class="btn out sm" href="#/process">Open</a></div>`}).join('')}</div>`;
+}
+
 function renderDashboard(){
   const assets=DB.all('assets');
   const s=Stops.summary(anOpts());
@@ -658,6 +672,11 @@ function renderDashboard(){
       <div class="l">PM compliance (90d)</div>
       <div class="d">${comp.overdueNow} overdue · ${openWos.length} open WOs</div></div>
   </div>
+
+  ${(()=>{const pc=processCompliance(30),latest=pc.out[0];return `<div class="grid g2" style="margin-bottom:18px">
+    <div class="stat click" onclick="location.hash='#/compliance'"><div class="ic" style="background:${pc.pct===null?'var(--surf-3)':pc.pct>=90?'var(--ok-c)':'var(--bad-c)'};color:${pc.pct===null?'var(--muted)':pc.pct>=90?'var(--ok)':'var(--bad)'}">&#128202;</div><div class="n">${pc.pct===null?'—':pc.pct+'%'}</div><div class="l">Process compliance (30d)</div><div class="d">${pc.out.length} out-of-spec · ${pc.rows.length} readings</div></div>
+    <div class="stat click" onclick="location.hash='#/compliance'"><div class="ic" style="background:var(--bad-c);color:var(--bad)">&#9888;</div><div class="n" style="color:${pc.out.length?'var(--bad)':'var(--ok)'}">${pc.out.length}</div><div class="l">Process attention</div><div class="d">${latest?esc(latest.assetId)+' · '+esc(latest.parameter)+' · '+new Date(latest.recordedAt).toLocaleString():'No out-of-spec readings'}</div></div>
+  </div>`})()}
 
   <div class="card">
     <h3 class="sec">Production loss over time</h3>
@@ -2007,8 +2026,8 @@ function renderCompliance(){
   const assets=DB.all('assets');
   const pctColor=p=>p===null?'var(--muted)':p>=90?'var(--ok)':p>=70?'var(--warn)':'var(--bad)';
   return `
-  <h1 class="page">PM Compliance</h1>
-  <p class="sub">Evidence of preventive maintenance actually performed — every line is a permanent record.</p>
+  <h1 class="page">Plant Compliance & Attention Center</h1>
+  <p class="sub">PM evidence and out-of-spec process events in one action-focused view.</p>
   <div class="chipset">
     <button class="fchip ${COMP_DAYS===30?'on':''}" onclick="setCompDays(30)">30 days</button>
     <button class="fchip ${COMP_DAYS===90?'on':''}" onclick="setCompDays(90)">90 days</button>
@@ -2019,6 +2038,13 @@ function renderCompliance(){
     </select>
     <button class="btn out" onclick="exportCompliance()">&#128196; Export for audit</button>
   </div>
+  ${(()=>{const pc=processCompliance(COMP_DAYS,COMP_ASSET);const latest=pc.out[0];return `<div class="grid g4 compliance-kpis">
+    <div class="stat"><div class="n" style="color:${pc.pct===null?'var(--muted)':pc.pct>=90?'var(--ok)':'var(--bad)'}">${pc.pct===null?'—':pc.pct+'%'}</div><div class="l">Process compliance</div><div class="d">${pc.inSpec} in spec of ${pc.rows.length} readings</div></div>
+    <div class="stat"><div class="n" style="color:${pc.out.length?'var(--bad)':'var(--ok)'}">${pc.out.length}</div><div class="l">Out of spec</div><div class="d">Selected period and equipment</div></div>
+    <div class="stat"><div class="n">${Object.keys(pc.byAsset).length}</div><div class="l">Machines requiring attention</div><div class="d">Easy equipment identification</div></div>
+    <div class="stat"><div class="n" style="font-size:18px">${latest?new Date(latest.recordedAt).toLocaleDateString():'—'}</div><div class="l">Latest process alert</div><div class="d">${latest?new Date(latest.recordedAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' · '+esc(latest.assetId):'No alert'}</div></div>
+  </div><div class="card attention-card"><div class="attn-head"><div><h3 class="sec">Process attention</h3><p class="sub">Machine, date, time, project/model, user, actual value and specification.</p></div><a class="btn" href="#/process">Open Process Parameters</a></div>${processAttentionRows(pc.out)}</div>`})()}
+
   <div class="grid g4" style="margin-bottom:20px">
     <div class="stat"><div class="n" style="color:${pctColor(s.pct)}">${s.pct===null?'—':s.pct+'%'}</div>
       <div class="l">Completed on time</div><div class="d">${s.onTime} of ${s.done}</div></div>
@@ -2938,9 +2964,9 @@ function ppHistory(){const rs=Process.readings(PP.assetId,PP.project,PP.days);re
 function ppRows(){return Process.readings(PP.assetId,PP.project,PP.days)}
 function ppBase(){return `TechX_Process_${String(PP.assetId).replace(/\W/g,'_')}_${String(PP.project||'Project').replace(/\W/g,'_')}_${PP.days}days`}
 function ppData(){return ppRows().map(r=>({'Date / Time':new Date(r.recordedAt).toLocaleString(),'Equipment ID':r.assetId,'Equipment':ppAssetName(r.assetId),'Project / Model':r.project,'Parameter':r.parameter,'Target':r.target,'Minimum':r.min,'Maximum':r.max,'Unit':r.unit||'','Actual':r.actual,'Result':r.result==='in'?'IN SPEC':'OUT OF SPEC','Recorded By':r.recordedBy||'','Acknowledgement Reason':r.ackReason||'','Corrective Action':r.correctiveAction||''}))}
-function ppDownloadCSV(){const d=ppData();if(!d.length){toast('No parameter records to download');return}const h=Object.keys(d[0]),q=v=>'"'+String(v??'').replace(/"/g,'""')+'"',csv=[h.map(q).join(','),...d.map(r=>h.map(x=>q(r[x])).join(','))].join('\r\n');downloadBlob('\ufeff'+csv,ppBase()+'.csv','text/csv;charset=utf-8')}
-function ppDownloadXML(){const d=ppData();if(!d.length){toast('No parameter records to download');return}const escx=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'),cell=v=>`<Cell><Data ss:Type="String">${escx(v)}</Data></Cell>`,h=Object.keys(d[0]);const xml=`<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Process Records"><Table><Row>${h.map(cell).join('')}</Row>${d.map(r=>`<Row>${h.map(x=>cell(r[x])).join('')}</Row>`).join('')}</Table></Worksheet></Workbook>`;downloadBlob(xml,ppBase()+'.xml','application/vnd.ms-excel')}
 function downloadBlob(data,name,type){const u=URL.createObjectURL(new Blob([data],{type})),x=document.createElement('a');x.href=u;x.download=name;x.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}
+function ppDownloadCSV(){const d=ppData();if(!d.length){toast('No parameter records to download');return}const h=Object.keys(d[0]),q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';downloadBlob('\ufeff'+[h.map(q).join(','),...d.map(r=>h.map(x=>q(r[x])).join(','))].join('\r\n'),ppBase()+'.csv','text/csv;charset=utf-8')}
+function ppDownloadXML(){const d=ppData();if(!d.length){toast('No parameter records to download');return}const e=v=>String(v??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'),c=v=>`<Cell><Data ss:Type="String">${e(v)}</Data></Cell>`,h=Object.keys(d[0]);downloadBlob(`<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Process Records"><Table><Row>${h.map(c).join('')}</Row>${d.map(r=>`<Row>${h.map(x=>c(r[x])).join('')}</Row>`).join('')}</Table></Worksheet></Workbook>`,ppBase()+'.xml','application/vnd.ms-excel')}
 function ppPrintHistory(){const d=ppData();if(!d.length){toast('No parameter records to print');return}const h=Object.keys(d[0]),w=open('','_blank');w.document.write(`<html><head><title>${ppBase()}</title><style>body{font-family:Arial}table{border-collapse:collapse;width:100%;font-size:10px}th,td{border:1px solid #999;padding:5px}th{background:#eee}</style></head><body><h2>Tech X Process Parameter History</h2><p>${esc(PP.assetId)} · ${esc(PP.project)} · Last ${PP.days} days</p><table><thead><tr>${h.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody>${d.map(r=>`<tr>${h.map(x=>`<td>${esc(r[x])}</td>`).join('')}</tr>`).join('')}</tbody></table></body></html>`);w.document.close();w.print()}
 function ppIntel(){const rs=Process.readings(PP.assetId,PP.project,PP.days), outs=rs.filter(x=>x.result==='out'), pct=rs.length?Math.round((rs.length-outs.length)/rs.length*100):null, by={};outs.forEach(x=>by[x.parameter]=(by[x.parameter]||0)+1);const rank=Object.entries(by).sort((a,b)=>b[1]-a[1]);return `<div class="card">${ppDayFilter()}<div class="grid g3"><div class="stat"><div class="n">${rs.length}</div><div class="l">Readings</div></div><div class="stat"><div class="n">${pct===null?'—':pct+'%'}</div><div class="l">In spec</div></div><div class="stat"><div class="n">${outs.length}</div><div class="l">Out of spec</div></div></div><h3 class="sec">Out-of-spec ranking</h3>${rank.length?rank.map(x=>`<div class="bar-row"><span>${esc(x[0])}</span><b>${x[1]}</b></div>`).join(''):'<div class="placeholder">No out-of-spec records in this period.</div>'}</div>`}
 function ppSetup(ts){const allProjects=[...new Set(Process.effective().map(x=>x.project))].sort();return `<div class="card"><h3 class="sec">Admin · Project / Model & Parameter Setup</h3><div class="note">Create a new project/model for any equipment, or edit an existing specification. Frequency has been removed.</div><div class="actions"><button class="btn filled" onclick="ppEditTemplate('')">Add Project / Parameter</button><button class="btn out" onclick="ppInstall()">Install X294 defaults</button></div><p><b>Configured projects:</b> ${allProjects.map(esc).join(', ')||'None'}</p><div class="tablewrap"><table><thead><tr><th>Parameter</th><th>Target</th><th>Range</th><th>Unit</th><th></th></tr></thead><tbody>${ts.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.target)}</td><td>${esc(x.min)} – ${esc(x.max)}</td><td>${esc(x.unit||'')}</td><td><button class="btn out sm" onclick="ppEditTemplate('${jsq(x.id)}')">Edit</button></td></tr>`).join('')}</tbody></table></div></div>`}
