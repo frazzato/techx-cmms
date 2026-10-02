@@ -1,5 +1,5 @@
-# V25.3 — Process History Print & Export
+# V25.4 — Cumulative Stability Fix
 
-- Added Print, Download CSV, and Download Excel XML to Process Parameters History.
-- Exports respect Equipment, Project/Model, and 7/30/60-day filters.
-- Preserved V25.2 persistence and V25 Copilot Cross-Intelligence.
+- Restored Admin add/edit Process Parameters.
+- Preserved process persistence, Print, CSV, Excel XML, and Copilot cross-intelligence.
+- Fixed equipment selector argument order in Admin modal.
