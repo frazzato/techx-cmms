@@ -1,7 +1,8 @@
-# V24.3 — Admin Setup Fix
+# V24.4 — Process Record History & Export
 
-- Fixed **Add Project / Parameter** button: the equipment selector arguments were reversed and caused the modal to fail before opening.
-- Admin can now select any equipment, type a new project/model, and add the first process parameter.
-- Existing parameters remain editable for equipment, project/model, name, target, minimum, maximum, and unit.
-- Preserved V24.2 positive range normalization and **Install / Repair X294 defaults**.
-- Preserved no-frequency workflow and 7/30/60-day filters.
+- Recorded process values now open in **History** immediately after saving.
+- Added process collections to the client database collection list so cloud refresh and local reload preserve readings reliably.
+- Equipment IDs and project/model names are matched consistently as trimmed text.
+- Added 7/30/60-day **Download Excel XML** and **Download CSV** exports.
+- Export includes specification, actual result, user, date/time, acknowledgement, and corrective action.
+- Preserved V24.3 Admin Setup and V24.2 range normalization.

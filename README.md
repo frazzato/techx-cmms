@@ -1,5 +1,3 @@
-# Tech X CMMS V24.3
+# Tech X CMMS V24.4
 
-Fixes Admin Setup for creating and editing equipment / project-model / process-parameter combinations, while preserving V24.2 range corrections.
-
-After deployment, sign in as Admin and use **Process Parameters → Admin Setup → Add Project / Parameter**.
+This release fixes process reading history visibility and adds Excel XML / CSV export. After saving process values, Tech X opens History for the selected equipment and project/model.

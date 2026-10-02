@@ -1,9 +1,9 @@
 {
   "name": "techx-cmms",
-  "version": "2.4.3",
+  "version": "2.4.4",
   "private": true,
   "type": "module",
-  "description": "Tech X CMMS V24.3 \u2014 fixed Admin project/model and process parameter setup.",
+  "description": "Tech X CMMS V24.4 \u2014 process record history visibility and Excel XML export.",
   "scripts": {
     "dev": "vercel dev"
   },
