@@ -14,11 +14,11 @@ const FREQS = ['daily','weekly','biweekly','monthly','quarterly','semiannual','a
 const WO_TYPES = ['Repair','Preventive','Improvement','Troubleshoot','Inspection'];
 const WO_STATUS = ['Open','In Progress','On Hold','Completed','Cancelled'];
 const PRIORITIES = ['High','Medium','Low'];
-const ROLE_LABEL = { admin:'Admin', maintenance:'Maintenance' };
+const ROLE_LABEL = { admin:'Admin', maintenance:'Maintenance / Process Tech' };
 const LINK_HINT = 'Paste a SharePoint or web address. Opens in a new tab — the file stays where it lives.';
 
 const VIEWS = {
-  maintenance: ['home','assets','asset','work','wo','pm','stops','parts','smart','settings','login'],
+  maintenance: ['home','assets','asset','work','wo','pm','stops','parts','process','smart','settings','login'],
   admin: 'all'
 };
 function canView(name){
@@ -40,7 +40,7 @@ let AN={kind:'',assets:[],days:30,metric:'mins'};
 
 const ROUTES={home:renderHome,dashboard:renderDashboard,assets:renderAssets,asset:renderAssetDetail,
   work:renderWork,pm:renderWork,wo:renderWork,
-  parts:renderParts,qr:renderQR,smart:renderSmart,compliance:renderCompliance,
+  parts:renderParts,process:renderProcess,qr:renderQR,smart:renderSmart,compliance:renderCompliance,
   stops:renderStops,causes:renderCauses,
   import:renderImport,users:renderUsers,settings:renderSettings,login:renderLogin};
 
@@ -2914,3 +2914,55 @@ function txPrompts(){const r=txRoute();if(r==='asset')return['Why is this equipm
 function txRefresh(){const sc=document.getElementById('txScope'),pr=document.getElementById('txPrompts'),msg=document.getElementById('txMessages');if(sc)sc.textContent='Using '+txScreen()+' + current CMMS data';if(pr)pr.innerHTML=txPrompts().map(q=>`<button onclick="txAsk('${jsq(q)}')">${esc(q)}</button>`).join('');if(msg&&!msg.children.length){msg.innerHTML=txIntelligenceCards();txMsg('assistant','Ask why an asset is ranked, what changed, or what maintenance should do next.');}}
 const txAnalyzeV22=txAnalyze;
 txAnalyze=function(q){const s=q.toLowerCase(),assetId=txCurrentAsset();if(/why.*rank|why.*#|ranked here/.test(s))return txWhy(assetId||undefined);if(/what changed/.test(s))return txTrendIntelligence();if(/explain.*trend|downtime trend/.test(s))return txTrendIntelligence();if(/risk ranking|show risk/.test(s)){const r=txRiskRows();return{text:r.slice(0,8).map((x,i)=>`${i+1}. ${x.name} — ${x.score}/100 ${x.level}`).join('\n')||'No equipment data.',chart:txChart(r.slice(0,5).map(x=>({label:x.name,value:x.score,display:x.score+'/100',color:x.score>=75?'#b3261e':x.score>=50?'#e67e22':'#0b57d0'})),'Transparent risk score')};}if(/weekly briefing/.test(s))return{text:txBriefingText(),actions:`<div class="tx-actions"><button onclick="txDownloadBriefing()">Download briefing</button><button onclick="txCopyLast(this)">Copy</button></div>`};return txAnalyzeV22(q);};
+
+
+/* ============================================================
+   V24 — PROCESS PARAMETERS & PROCESS INTELLIGENCE
+   ============================================================ */
+let PROC={tab:'record',assetId:'10026',project:'X294 Headliner',days:30};
+function procSet(k,v){PROC[k]=v;route();}
+function procAssetName(id){const a=DB.get('assets',id);return a?DB.assetName(id):({'10026':'Automatic Molding Line','10027':'Spray Booth / Paternoster','10028':'Lamination Press'}[id]||id);}
+function procBadge(r){return r==='in'?'<span class="spec-badge in">IN SPEC</span>':'<span class="spec-badge out">OUT OF SPEC</span>';}
+function renderProcess(){
+ const assets=['10026','10027','10028']; const ts=Process.forAsset(PROC.assetId,PROC.project); const intel=Process.intelligence(PROC.assetId,PROC.days);
+ const admin=DB.role()==='admin';
+ return `<h1 class="page">Process Parameters</h1><p class="sub">Record actual process conditions and connect process drift to scrap and production loss.</p>
+ <div class="card process-hero"><div><b>${esc(PROC.project)}</b><span>${esc(procAssetName(PROC.assetId))} · Equipment ${esc(PROC.assetId)}</span></div><div class="process-kpis"><b>${ts.length}</b> parameters <b>${intel.pct===null?'—':intel.pct+'%'}</b> in spec</div></div>
+ <div class="process-tabs">
+  ${[['record','Record Values'],['history','History'],['intelligence','Process Intelligence'],...(admin?[['setup','Admin Setup']]:[])].map(x=>`<button class="fchip ${PROC.tab===x[0]?'on':''}" onclick="procSet('tab','${x[0]}')">${x[1]}</button>`).join('')}
+ </div>
+ <div class="card filterbar"><div class="fb-row"><span class="fb-lbl">Equipment</span>${assets.map(id=>`<button class="fchip ${PROC.assetId===id?'on':''}" onclick="procSet('assetId','${id}')">${id} · ${esc(procAssetName(id))}</button>`).join('')}</div><div class="fb-row"><span class="fb-lbl">Project / Model</span><b>${esc(PROC.project)}</b></div></div>
+ ${PROC.tab==='record'?renderProcessRecord(ts):PROC.tab==='history'?renderProcessHistory():PROC.tab==='intelligence'?renderProcessIntelligence(intel):renderProcessSetup(ts)} `;
+}
+function renderProcessRecord(ts){
+ if(!ts.length)return `<div class="placeholder">No template is installed for this equipment.<br><button class="btn filled" onclick="procInstall()">Install X294 templates</button></div>`;
+ return `<div class="note">Enter the actual value. Out-of-spec values require an acknowledgement and corrective action before saving.</div>
+ <form id="procForm" onsubmit="event.preventDefault();procSaveReadings()"><div class="param-grid">${ts.map(t=>`<div class="param-card" id="pc-${esc(t.id)}">
+   <div class="param-head"><b>${esc(t.name)}</b><span>${esc(t.frequency||'As required')}</span></div>
+   <div class="spec-line">Target <b>${esc(t.target)}</b> · Range <b>${esc(t.min)} – ${esc(t.max)}</b> ${esc(t.unit||'')}</div>
+   <label>Actual value</label><input type="number" step="any" id="pv-${esc(t.id)}" data-template="${esc(t.id)}" oninput="procCheck('${jsq(t.id)}')" placeholder="Enter actual"/>
+   <div id="ps-${esc(t.id)}"></div>
+   <div class="oos-fields" id="po-${esc(t.id)}" hidden>
+    <label>Acknowledgement reason</label><select id="pr-${esc(t.id)}"><option value="">— choose —</option><option>Machine Drift</option><option>Process Adjustment</option><option>Setup Issue</option><option>Material Variation</option><option>Sensor Issue</option><option>Other</option></select>
+    <label>Corrective action</label><textarea id="pa-${esc(t.id)}" placeholder="What was checked, adjusted, or escalated?"></textarea>
+   </div></div>`).join('')}</div>
+ <div class="actions"><button class="btn filled" type="submit">Save recorded values</button><button class="btn out" type="button" onclick="document.getElementById('procForm').reset();route()">Clear</button></div></form>`;
+}
+function procCheck(id){const t=Process.effective().find(x=>x.id===id),el=document.getElementById('pv-'+id),stat=document.getElementById('ps-'+id),oos=document.getElementById('po-'+id);if(!t||!el)return;const r=Process.evaluate(t,el.value);stat.innerHTML=r==='invalid'?'':procBadge(r);oos.hidden=r!=='out';}
+async function procSaveReadings(){
+ const ts=Process.forAsset(PROC.assetId,PROC.project);let saved=0;
+ for(const t of ts){const el=document.getElementById('pv-'+t.id);if(!el||el.value==='')continue;const result=Process.evaluate(t,el.value);if(result==='invalid'){toast('Enter a number for '+t.name);return;}
+  const reason=(document.getElementById('pr-'+t.id)||{}).value||'', action=(document.getElementById('pa-'+t.id)||{}).value||'';
+  if(result==='out'&&(!reason||action.trim().length<5)){toast('Acknowledge '+t.name+' and explain the corrective action');return;}
+  await DB.upsert('processReadings',{id:DB.nextId('processReadings','PR-',6),templateId:t.id,assetId:t.assetId,project:t.project,parameter:t.name,target:t.target,min:t.min,max:t.max,unit:t.unit||'',frequency:t.frequency||'',actual:Number(el.value),result,ackReason:reason,correctiveAction:action,recordedBy:DB.getWho(),recordedAt:new Date().toISOString()});saved++;}
+ if(!saved){toast('Enter at least one actual value');return;}toast(saved+' process value'+(saved===1?'':'s')+' recorded');route();
+}
+function renderProcessHistory(){const rows=Process.byAsset(PROC.assetId);return `<div class="card"><h3 class="sec">Reading history</h3>${rows.length?`<div class="tablewrap"><table><thead><tr><th>Date / time</th><th>Parameter</th><th>Specification</th><th>Actual</th><th>Result</th><th>User</th><th>Acknowledgement</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc(new Date(r.recordedAt).toLocaleString())}</td><td><b>${esc(r.parameter)}</b></td><td>${esc(r.min)} – ${esc(r.max)} ${esc(r.unit||'')}</td><td>${esc(r.actual)}</td><td>${procBadge(r.result)}</td><td>${esc(r.recordedBy||r.updatedBy||'')}</td><td>${r.result==='out'?`<b>${esc(r.ackReason)}</b><br>${esc(r.correctiveAction)}`:'—'}</td></tr>`).join('')}</tbody></table></div>`:'<div class="placeholder">No readings recorded for this equipment yet.</div>'}</div>`;}
+function renderProcessIntelligence(x){const inN=x.linked.in,outN=x.linked.out;const rows=Process.byAsset(PROC.assetId).slice(0,60);const by={};rows.forEach(r=>{if(!by[r.parameter])by[r.parameter]={name:r.parameter,total:0,out:0};by[r.parameter].total++;if(r.result==='out')by[r.parameter].out++;});const risk=Object.values(by).sort((a,b)=>b.out-a.out).slice(0,8);
+ return `<div class="grid g4"><div class="stat"><div class="n">${x.readings}</div><div class="l">Readings (${PROC.days}d)</div></div><div class="stat"><div class="n" style="color:var(--ok)">${x.pct===null?'—':x.pct+'%'}</div><div class="l">In specification</div></div><div class="stat"><div class="n" style="color:var(--bad)">${x.outSpec}</div><div class="l">Out of specification</div></div><div class="stat"><div class="n">${x.top?esc(x.top[0]):'—'}</div><div class="l">Most frequent process risk</div></div></div>
+ <div class="grid g2"><div class="card"><h3 class="sec">Out-of-spec ranking</h3>${Charts.bars(risk.map(r=>({label:r.name,value:r.out,display:r.out+' of '+r.total,color:Charts.C.down})),{emptyText:'No out-of-spec readings.'})}</div>
+ <div class="card"><h3 class="sec">12-hour production-loss association</h3><div class="compare-spec"><div><span>After in-spec readings</span><b>${inN.parts} parts · ${Stops.fmtMins(inN.mins)}</b><small>${inN.events} associated events</small></div><div class="bad"><span>After out-of-spec readings</span><b>${outN.parts} parts · ${Stops.fmtMins(outN.mins)}</b><small>${outN.events} associated events</small></div></div><div class="note">Association means a production-loss event began within 12 hours of a reading. It is useful for investigation, but does not prove causation.</div></div></div>`;}
+function renderProcessSetup(ts){return `<div class="card"><h3 class="sec">Admin · Process Templates</h3><div class="note">Specifications are admin-controlled. Readings are append-only and cannot be rewritten.</div><div class="actions"><button class="btn filled" onclick="procInstall()">Install / refresh X294 Headliner templates</button><button class="btn out" onclick="procEditTemplate()">Add parameter</button></div>${renderTable([{label:'Parameter',render:r=>`<b>${esc(r.name)}</b>`},{label:'Target',render:r=>esc(r.target)},{label:'Range',render:r=>`${esc(r.min)} – ${esc(r.max)} ${esc(r.unit||'')}`},{label:'Frequency',render:r=>esc(r.frequency||'')},{label:'',render:r=>`<button class="btn out sm" onclick="procEditTemplate('${jsq(r.id)}')">Edit</button>`}],ts,{empty:'No templates.'})}</div>`;}
+async function procInstall(){if(DB.role()!=='admin'){toast('Admins only');return;}const n=await Process.install();toast(n?n+' X294 template rows installed':'X294 templates already installed');route();}
+function procEditTemplate(id){const old=id?DB.get('processTemplates',id):null;Modal.open({title:old?'Edit process parameter':'Add process parameter',body:F.select('assetId','Equipment',['10026','10027','10028'].map(x=>({v:x,t:x+' · '+procAssetName(x)})),old?old.assetId:PROC.assetId)+F.text('project','Project / Model',old?old.project:Process.PROJECT)+F.text('name','Parameter name',old?old.name:'')+F.text('target','Target',old?old.target:'',{type:'number',step:'any'})+F.text('min','Minimum',old?old.min:'',{type:'number',step:'any'})+F.text('max','Maximum',old?old.max:'',{type:'number',step:'any'})+F.text('unit','Unit',old?old.unit:'')+F.text('frequency','Frequency',old?old.frequency:'Every 3 hours'),footer:`<button class="btn filled" onclick="procSaveTemplate('${id||''}')">Save template</button><button class="btn out" onclick="Modal.close()">Cancel</button>`});}
+async function procSaveTemplate(id){const d=F.read();if(!d.assetId||!d.project||!d.name||d.min===''||d.max===''){toast('Equipment, project, parameter and range are required');return;}if(Number(d.min)>Number(d.max)){toast('Minimum cannot be higher than maximum');return;}await DB.upsert('processTemplates',{id:id||DB.nextId('processTemplates','PT-',5),assetId:d.assetId,project:d.project.trim(),name:d.name.trim(),target:Number(d.target),min:Number(d.min),max:Number(d.max),unit:(d.unit||'').trim(),frequency:(d.frequency||'').trim(),sort:Date.now()});Modal.close();toast('Process template saved');route();}
