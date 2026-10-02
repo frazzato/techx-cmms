@@ -277,7 +277,7 @@ export default async function handler(req, res) {
         if (!COLLECTIONS.includes(collection)) return res.status(400).json({ error: 'Unknown collection' });
         if (!record || !record.id) return res.status(400).json({ error: 'Record needs an id' });
         if (ADMIN_WRITE.includes(collection) && !isAdmin(me))
-          return res.status(403).json({ error: 'Only an admin can change setup lists' });
+          return res.status(403).json({ error: 'Only an admin can change the cause lists' });
 
         /* An audit record is written once and never rewritten. */
         if (APPEND_ONLY.includes(collection)) {
