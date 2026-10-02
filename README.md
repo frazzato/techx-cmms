@@ -1,3 +1,5 @@
-# Tech X CMMS V24.4
+# Tech X CMMS V25 — Copilot Cross-Intelligence
 
-This release fixes process reading history visibility and adds Excel XML / CSV export. After saving process values, Tech X opens History for the selected equipment and project/model.
+Builds on V24.4 and adds automatic findings inside the existing Tech X Copilot panel—no new menu, screen, button, AI key, or external data service.
+
+Cross-analysis connects process readings, scrap/parts lost, downtime, work orders, and PM status. Associations use a 12-hour window and do not prove causation.

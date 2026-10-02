@@ -1,9 +1,9 @@
 {
   "name": "techx-cmms",
-  "version": "2.4.4",
+  "version": "2.5.0",
   "private": true,
   "type": "module",
-  "description": "Tech X CMMS V24.4 \u2014 process record history visibility and Excel XML export.",
+  "description": "Tech X CMMS V25 \u2014 automatic cross-intelligence in Tech X Copilot.",
   "scripts": {
     "dev": "vercel dev"
   },
