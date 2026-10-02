@@ -1,9 +1,9 @@
 {
   "name": "techx-cmms",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "private": true,
   "type": "module",
-  "description": "Tech X CMMS V24.2 \u2014 corrected process parameter range handling.",
+  "description": "Tech X CMMS V24.3 \u2014 fixed Admin project/model and process parameter setup.",
   "scripts": {
     "dev": "vercel dev"
   },

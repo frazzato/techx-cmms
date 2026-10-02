@@ -1,7 +1,7 @@
-# V24.2 — Range Parser Fix
+# V24.3 — Admin Setup Fix
 
-- Corrected imported ranges such as `70-90`, `525-625`, and `4.5-5.5` so the upper limit is positive.
-- Corrected all X294 Headliner default specifications.
-- Hardened display and In Spec / Out of Spec evaluation with normalized numeric limits.
-- Added Admin **Install / Repair X294 defaults** action to repair malformed saved templates.
-- Preserved V24.1 project/model creation, specification editing, no-frequency workflow, and 7/30/60-day filters.
+- Fixed **Add Project / Parameter** button: the equipment selector arguments were reversed and caused the modal to fail before opening.
+- Admin can now select any equipment, type a new project/model, and add the first process parameter.
+- Existing parameters remain editable for equipment, project/model, name, target, minimum, maximum, and unit.
+- Preserved V24.2 positive range normalization and **Install / Repair X294 defaults**.
+- Preserved no-frequency workflow and 7/30/60-day filters.

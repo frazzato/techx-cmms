@@ -1,6 +1,5 @@
-# Tech X CMMS V24.2 — Process Intelligence
+# Tech X CMMS V24.3
 
-V24.2 fixes process specification range parsing and evaluation while preserving all V24.1 features.
+Fixes Admin Setup for creating and editing equipment / project-model / process-parameter combinations, while preserving V24.2 range corrections.
 
-## Upgrade
-Deploy these files over V24.1. Sign in as Admin, open **Process Parameters → Admin Setup**, and click **Install / Repair X294 defaults** once to repair any malformed ranges already saved in the database.
+After deployment, sign in as Admin and use **Process Parameters → Admin Setup → Add Project / Parameter**.
