@@ -402,3 +402,6 @@ input[readonly]{background:var(--surf-2)}
 
 /* V24.1 process validation */
 .process-tabs{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.param-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin:16px 0}.param-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:0 2px 8px rgba(20,40,80,.05)}.spec-line{font-size:12px;color:var(--muted);margin:8px 0 12px}.spec-badge{display:inline-block;margin-top:8px;border-radius:999px;padding:4px 9px;font-size:11px;font-weight:800}.spec-badge.in{background:var(--ok-c);color:var(--ok)}.spec-badge.out{background:var(--bad-c);color:var(--bad)}.oos-fields{margin-top:12px;padding:12px;border-radius:10px;background:var(--bad-c);border:1px solid #f1b8b4}.bar-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line)}@media(max-width:700px){.param-grid{grid-template-columns:1fr}}
+
+/* V24.4 history/export */
+.history-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.history-head .actions{margin:0}
