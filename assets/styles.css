@@ -406,4 +406,4 @@ input[readonly]{background:var(--surf-2)}
 /* V25.1 Copilot intelligence */
 .tx-message{white-space:pre-wrap}
 
-.history-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.history-head .actions{display:flex;gap:8px;flex-wrap:wrap;margin:0}
+.history-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.history-head .actions{display:flex;gap:8px;flex-wrap:wrap}
