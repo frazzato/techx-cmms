@@ -1,3 +1,3 @@
-# Tech X CMMS V25.1
+# Tech X CMMS V25.5
 
-Fixed syntax-safe Copilot cross-intelligence built on V24.4. Deploy all files over the current repository and hard refresh the browser.
+Cumulative release based on frozen V25.4. Adds Process Compliance and a Plant Attention Center without removing existing functionality.
